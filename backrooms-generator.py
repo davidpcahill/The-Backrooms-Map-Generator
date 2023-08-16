@@ -17,7 +17,7 @@ ROOM_HEIGHT_RANGE = (1, 32)  # Range of room height (min, max)
 NUM_PILLAR_ROOMS = 5  # Number of rooms with pillars
 PILLAR_ROOM_WIDTH_RANGE = (1, 32)  # Range of pillar room width (min, max)
 PILLAR_ROOM_HEIGHT_RANGE = (1, 32)  # Range of pillar room height (min, max)
-PILLAR_SPACING_RANGE = (2, 5)  # Range of pillar spacing (min, max)
+PILLAR_SPACING_RANGE = (3, 5)  # Range of pillar spacing (min, max)
 
 # Calculate the number of cells in each dimension
 NUM_COLS = SCREEN_WIDTH // CELL_SIZE
