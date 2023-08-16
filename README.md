@@ -5,7 +5,7 @@ Multiple adjustment variables are available in the script. I set to ones that ha
 
 # Adjustable variables
 
-Note: Higher NUM_MAZES results in more white space (less maze-like, more backrooms-like).
+Note: Higher NUM_MAZES results in more white space (less maze-like, more backrooms-like). But everything must be balanced as this has diminishing returns. Try out the default settings in the script first and play from there. Feel free to contribute!
 
 *Examples from one of the more sparse larger screenshots*
 ```
