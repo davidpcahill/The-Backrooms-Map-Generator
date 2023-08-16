@@ -1,5 +1,5 @@
 # The-Backrooms-Map-Generator
-This was written by ChatGPT in collaboration with me. It came out pretty amazingly well. It uses python and pygame.
+This was written by ChatGPT in collaboration with me. It came out pretty well. It uses python and pygame.
 
 Multiple adjustment variables are available in the script. I set to ones that have decent results.
 
