@@ -7,7 +7,7 @@ Multiple adjustment variables are available in the script. I set to ones that ha
 
 Note: Higher NUM_MAZES results in more white space (less maze-like, more backrooms-like). But everything must be balanced as this has diminishing returns. Try out the default settings in the script first and play from there. Feel free to contribute!
 
-*Examples from one of the more sparse larger screenshots*
+*Examples from one of the more sparse, larger-pixel screenshots*
 ```
 SCREEN_WIDTH = 1920  # Width of the screen in pixels
 SCREEN_HEIGHT = 1080  # Height of the screen in pixels
