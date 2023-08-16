@@ -39,6 +39,8 @@ R = Regenerate Map
 
 ![image](https://github.com/TagWolf/The-Backrooms-Map-Generator/assets/8665128/144e2057-f79d-46ca-9c54-6521714f085b)
 
+![image](https://github.com/TagWolf/The-Backrooms-Map-Generator/assets/8665128/f68452e2-79e1-4d88-b8b2-a4aa7ab0ae88)
+
 ![image](https://github.com/TagWolf/The-Backrooms-Map-Generator/assets/8665128/7f6e4e56-db4c-474f-b761-8728719a078c)
 
 ![image](https://github.com/TagWolf/The-Backrooms-Map-Generator/assets/8665128/ca530283-af62-4ad4-b3f8-35329f466e9f)
