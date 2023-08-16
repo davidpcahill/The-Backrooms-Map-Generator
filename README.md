@@ -5,7 +5,7 @@ Multiple adjustment variables are available in the script. I set to ones that ha
 
 # Adjustable variables
 
-Note: Higher NUM_MAZES results in more whitespace
+Note: Higher NUM_MAZES results in more whitespace (less maze-like, more backrooms-like)
 
 *Examples from one of the more sparse larger screenshots*
 ```
