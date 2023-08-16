@@ -11,7 +11,9 @@ SCREEN_HEIGHT = 1080  # Height of the screen in pixels
 CELL_SIZE = 8  # Size of each cell in pixels
 MAZE_FILL_PERCENTAGE = 0.8  # Desired maze fill percentage
 NUM_MAZES = 1000  # Number of mazes to overlay
-STOP_COLLISION_PROBABILITY = 0.5  # Probability of stopping if colliding with previous maze
+STOP_COLLISION_PROBABILITY = (
+    0.5  # Probability of stopping if colliding with previous maze
+)
 NUM_ROOMS = 2  # Number of rooms to generate
 ROOM_WIDTH_RANGE = (1, 32)  # Range of room width (min, max)
 ROOM_HEIGHT_RANGE = (1, 32)  # Range of room height (min, max)
@@ -20,9 +22,9 @@ PILLAR_ROOM_WIDTH_RANGE = (1, 32)  # Range of pillar room width (min, max)
 PILLAR_ROOM_HEIGHT_RANGE = (1, 32)  # Range of pillar room height (min, max)
 PILLAR_SPACING_RANGE = (2, 6)  # Range of pillar spacing (min, max)
 NUM_CUSTOM_ROOMS = 1  # Number of custom-shaped rooms to generate
-MIN_NUM_SIDES = 2     # Minimum number of sides for a custom room
-MAX_NUM_SIDES = 8     # Maximum number of sides for a custom room
-MIN_CUSTOM_ROOM_RADIUS = 1   # Minimum radius of custom room
+MIN_NUM_SIDES = 2  # Minimum number of sides for a custom room
+MAX_NUM_SIDES = 8  # Maximum number of sides for a custom room
+MIN_CUSTOM_ROOM_RADIUS = 1  # Minimum radius of custom room
 MAX_CUSTOM_ROOM_RADIUS = 16  # Maximum radius of custom room
 
 # Calculate the number of cells in each dimension
@@ -37,6 +39,7 @@ BLACK = (0, 0, 0)
 screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
 pygame.display.set_caption("The Backrooms Generator")
 
+
 # Function to draw the maze with paths of different widths
 def draw_maze(maze):
     for row in maze:
@@ -47,9 +50,13 @@ def draw_maze(maze):
             else:
                 pygame.draw.rect(screen, BLACK, (x, y, width, width))
 
+
 # Generate a maze using Prim's Algorithm
 def generate_maze(width, height):
-    maze = [[[x, y, CELL_SIZE, False] for x in range(0, width, CELL_SIZE)] for y in range(0, height, CELL_SIZE)]
+    maze = [
+        [[x, y, CELL_SIZE, False] for x in range(0, width, CELL_SIZE)]
+        for y in range(0, height, CELL_SIZE)
+    ]
     visited_cells = set()
 
     for _ in range(NUM_MAZES):
@@ -82,11 +89,15 @@ def generate_maze(width, height):
                 nx, ny = next_cell
 
                 # Check if the next cell collides with a previous maze
-                if random.random() > STOP_COLLISION_PROBABILITY or maze[(y + ny) // 2][(x + nx) // 2][3] == False:
+                if (
+                    random.random() > STOP_COLLISION_PROBABILITY
+                    or maze[(y + ny) // 2][(x + nx) // 2][3] == False
+                ):
                     frontier.append((nx, ny))
                     maze[(y + ny) // 2][(x + nx) // 2][3] = True
 
     return maze
+
 
 # Generate rooms on the maze
 def generate_rooms(maze):
@@ -100,11 +111,16 @@ def generate_rooms(maze):
             for col in range(x, x + room_width):
                 maze[row][col][3] = True
 
+
 # Generate rooms with pillars on the maze
 def generate_pillar_rooms(maze):
     for _ in range(NUM_PILLAR_ROOMS):
-        room_width = random.randint(PILLAR_ROOM_WIDTH_RANGE[0], PILLAR_ROOM_WIDTH_RANGE[1])
-        room_height = random.randint(PILLAR_ROOM_HEIGHT_RANGE[0], PILLAR_ROOM_HEIGHT_RANGE[1])
+        room_width = random.randint(
+            PILLAR_ROOM_WIDTH_RANGE[0], PILLAR_ROOM_WIDTH_RANGE[1]
+        )
+        room_height = random.randint(
+            PILLAR_ROOM_HEIGHT_RANGE[0], PILLAR_ROOM_HEIGHT_RANGE[1]
+        )
         x = random.randint(0, NUM_COLS - room_width)
         y = random.randint(0, NUM_ROWS - room_height)
 
@@ -113,10 +129,13 @@ def generate_pillar_rooms(maze):
                 maze[row][col][3] = True
 
         # Add pillars
-        pillar_spacing = random.randint(PILLAR_SPACING_RANGE[0], PILLAR_SPACING_RANGE[1])
+        pillar_spacing = random.randint(
+            PILLAR_SPACING_RANGE[0], PILLAR_SPACING_RANGE[1]
+        )
         for row in range(y, y + room_height, pillar_spacing):
             for col in range(x, x + room_width, pillar_spacing):
                 maze[row][col][3] = False
+
 
 # Function to check if a point is inside a custom-shaped room
 def is_inside_custom_room(x, y, vertices):
@@ -133,14 +152,12 @@ def is_inside_custom_room(x, y, vertices):
             left_vertex = vertices[j]
             right_vertex = vertices[i]
 
-        if (
-            (vertices[i][1] > y) != (vertices[j][1] > y) and
-            x < (right_vertex[0] - left_vertex[0]) * (y - left_vertex[1]) / (right_vertex[1] - left_vertex[1]) + left_vertex[0]
-        ):
+        if (vertices[i][1] > y) != (vertices[j][1] > y) and x < (
+            right_vertex[0] - left_vertex[0]
+        ) * (y - left_vertex[1]) / (right_vertex[1] - left_vertex[1]) + left_vertex[0]:
             inside = not inside
 
     return inside
-
 
 
 # Generate rooms with random shapes
@@ -148,7 +165,9 @@ def generate_custom_rooms(maze):
     for _ in range(NUM_CUSTOM_ROOMS):
         num_sides = random.randint(MIN_NUM_SIDES, MAX_NUM_SIDES)
         room_radius = random.randint(MIN_CUSTOM_ROOM_RADIUS, MAX_CUSTOM_ROOM_RADIUS)
-        x = random.randint(room_radius * 2, NUM_COLS - room_radius * 2)  # Avoid rooms too close to the edge
+        x = random.randint(
+            room_radius * 2, NUM_COLS - room_radius * 2
+        )  # Avoid rooms too close to the edge
         y = random.randint(room_radius * 2, NUM_ROWS - room_radius * 2)
 
         vertices = []
