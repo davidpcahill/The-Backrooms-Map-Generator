@@ -9,8 +9,10 @@ R = Regenerate Map
 ## Examples
 ![image](https://github.com/TagWolf/The-Backrooms-Map-Generator/assets/8665128/b3e26ceb-53e6-4504-836a-28563e1ccb75)
 
-![image](https://github.com/TagWolf/The-Backrooms-Map-Generator/assets/8665128/70ba10f3-22f3-4fbe-917a-fadbda867f6d)
+![image](https://github.com/TagWolf/The-Backrooms-Map-Generator/assets/8665128/61b7b2e8-a5e0-4c22-be12-ab98662fd0c8)
 
 ![image](https://github.com/TagWolf/The-Backrooms-Map-Generator/assets/8665128/7f6e4e56-db4c-474f-b761-8728719a078c)
 
 ![image](https://github.com/TagWolf/The-Backrooms-Map-Generator/assets/8665128/2f429d06-5909-4507-a290-d4f8269fd6ee)
+
+![image](https://github.com/TagWolf/The-Backrooms-Map-Generator/assets/8665128/70ba10f3-22f3-4fbe-917a-fadbda867f6d)
