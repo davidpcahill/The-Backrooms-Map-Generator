@@ -3,6 +3,16 @@ This was written by ChatGPT in collaboration with me. It came out pretty well. I
 
 Multiple adjustment variables are available in the script. I set to ones that have decent results.
 
+# What is The Backrooms?
+If you’re not careful and you noclip out of reality in the wrong areas you’ll end up in the Backrooms, where it’s nothing but the stink of old moist carpet, the madness of mono-yellow, the endless background noise of fluorescent lights at maximum hum-buzz, and approximately six hundred million square miles of randomly segmented empty rooms to be trapped in. God save you if you hear something wandering around nearby, because it sure as hell has heard you.
+
+![Backrooms_model](https://github.com/TagWolf/The-Backrooms-Map-Generator/assets/8665128/94a2f852-40c1-4d31-b475-2eb9bf7b5592)
+
+Source: https://backrooms.fandom.com/wiki/Level_0
+
+Source: https://en.wikipedia.org/wiki/The_Backrooms
+
+
 # Adjustable variables
 
 Note: Higher NUM_MAZES and CELL_SIZE results in more white space (less maze-like, more backrooms-like). But everything must be balanced as this has diminishing returns. Try out the default settings in the script first and play from there. Feel free to contribute!
