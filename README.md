@@ -44,9 +44,12 @@ Plus, from the same canon research:
   (like the space above the drop ceiling, but you're in it)
 - **drop-ceiling fluorescent panels**, inconsistently placed, with flicker;
   whole **blackout zones** have no lights at all
-- worn pale-yellow wallpaper with a dark chair-rail trim (palette matched to
-  the original Level 0 photo), Berber carpet, synthesized 120 Hz hum-buzz
-  (`--mute`)
+- **textured wallpaper** — procedurally generated striped paper with a dark
+  chair-rail trim, matched to the original Level 0 photo; Berber carpet,
+  synthesized 120 Hz hum-buzz (`--mute`)
+- an auto-walker that **plans real routes**: BFS pathfinding to distant
+  goals along a drifting exploration heading, smooth carrot-point steering,
+  velocity easing, and a stride-synced camera bob
 - **Peripheral Shift** — the map quietly re-carves itself in areas you are
   not looking at, so retracing your steps never quite works. Watch it happen
   on the minimap (`M`). Disable with `--no-shift`.
@@ -144,7 +147,6 @@ spacing) live in the `Config` dataclass at the top of
 
 ## Ideas / contributions welcome
 
-- Textured walls (real wallpaper pattern instead of flat shading)
 - Entity-free scares: distant footstep audio, lights going out in banks
 - Ramps and raked floors (Kane Pixels-style slanted crawl gaps)
 - Export maps as JSON/Tiled for use in other engines
