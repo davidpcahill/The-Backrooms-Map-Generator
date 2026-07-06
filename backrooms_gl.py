@@ -148,6 +148,28 @@ out vec2 uv;
 void main() { uv = in_pos * 0.5 + 0.5; gl_Position = vec4(in_pos, 0.0, 1.0); }
 """
 
+OVERLAY_VS = """
+#version 330
+uniform vec4 rect;      // x0, y0 (bottom-left, NDC), w, h
+in vec2 in_pos;         // unit quad 0..1
+out vec2 uv;
+void main() {
+    uv = vec2(in_pos.x, 1.0 - in_pos.y);   // pygame surfaces are top-down
+    gl_Position = vec4(rect.xy + in_pos * rect.zw, 0.0, 1.0);
+}
+"""
+
+OVERLAY_FS = """
+#version 330
+uniform sampler2D tex;
+uniform float alpha;
+in vec2 uv; out vec4 fragment;
+void main() {
+    vec4 t = texture(tex, uv);
+    fragment = vec4(t.rgb, t.a * alpha);
+}
+"""
+
 BRIGHT_FS = """
 #version 330
 uniform sampler2D scene;
@@ -372,7 +394,16 @@ class WorldMesh:
                 self._build(cx, cy)
 
     def rebuild_cells(self, cells):
-        dirty = {(x // CHUNK, y // CHUNK) for x, y in cells}
+        # A changed cell alters the wall faces of its NEIGHBORS too — and
+        # those may live in adjacent chunks. Missing this is how see-through
+        # holes accumulate at chunk borders as the Shift keeps carving.
+        w = self.world
+        expanded = set()
+        for x, y in cells:
+            for nx, ny in ((x, y), (x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
+                if 0 <= nx < w.cols and 0 <= ny < w.rows:
+                    expanded.add((nx, ny))
+        dirty = {(x // CHUNK, y // CHUNK) for x, y in expanded}
         for cx, cy in dirty:
             self._build(cx, cy)
 
@@ -684,6 +715,7 @@ def main(argv=None):
     ap.add_argument("--spawn-zone",
                     choices=("tall", "crawl", "pit", "stairs", "ramp"), default=None)
     ap.add_argument("--test-death", action="store_true", help=argparse.SUPPRESS)
+    ap.add_argument("--debug-overlay", action="store_true", help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
 
     bw.apply_style(args.level)
@@ -731,6 +763,34 @@ def main(argv=None):
     q_bright = ctx.vertex_array(bright_prog, [(quad, "2f", "in_pos")])
     q_blur = ctx.vertex_array(blur_prog, [(quad, "2f", "in_pos")])
     q_comp = ctx.vertex_array(comp_prog, [(quad, "2f", "in_pos")])
+
+    overlay_prog = ctx.program(vertex_shader=OVERLAY_VS, fragment_shader=OVERLAY_FS)
+    unit = ctx.buffer(np.array(
+        [0, 0, 1, 0, 0, 1, 0, 1, 1, 0, 1, 1], dtype=np.float32).tobytes())
+    q_overlay = ctx.vertex_array(overlay_prog, [(unit, "2f", "in_pos")])
+    overlay_texs = {}
+
+    def draw_overlay(name, surf, x_px, y_px, alpha):
+        """Blit a pygame surface into the frame at pixel coords (top-left)."""
+        w_px, h_px = surf.get_size()
+        data = pygame.image.tobytes(surf, "RGBA")
+        tex = overlay_texs.get(name)
+        if tex is None or tex.size != (w_px, h_px):
+            if tex is not None:
+                tex.release()
+            tex = ctx.texture((w_px, h_px), 4)
+            tex.filter = (0x2601, 0x2601)
+            overlay_texs[name] = tex
+        tex.write(data)
+        tex.use(0)
+        overlay_prog["tex"].value = 0
+        overlay_prog["alpha"].value = alpha
+        overlay_prog["rect"].value = (
+            -1.0 + 2.0 * x_px / W,
+            1.0 - 2.0 * (y_px + h_px) / H,
+            2.0 * w_px / W,
+            2.0 * h_px / H)
+        q_overlay.render()
 
     scene_tex = ctx.texture((W, H), 4)
     scene_depth = ctx.depth_renderbuffer((W, H))
@@ -785,6 +845,11 @@ def main(argv=None):
     flicker_next = rng.uniform(4.0, 10.0)
     hum_scan = 0.0
     tear_timer = 0.0
+    show_map = bool(args.debug_overlay)
+    hud_timer = 0.0 if headless and not args.debug_overlay else 4.0
+    hud_font = pygame.font.SysFont("menlo,consolas,monospace", 15)
+    mm_timer = 0.0
+    mm_surf = None
     t_now = 0.0
     recorded = []
     record_frames = int(args.seconds * 15) if args.record else 0
@@ -800,10 +865,19 @@ def main(argv=None):
             if event.type == pygame.QUIT:
                 running = False
             elif event.type == pygame.KEYDOWN:
+                hud_timer = 3.0
                 if event.key == pygame.K_ESCAPE:
                     running = False
                 elif event.key == pygame.K_TAB:
                     auto = not auto
+                elif event.key == pygame.K_m:
+                    show_map = not show_map
+                elif event.key == pygame.K_F12:
+                    data = (window_fbo or out_fbo).read(components=3)
+                    from PIL import Image
+                    Image.frombytes("RGB", (W, H), data).transpose(
+                        Image.FLIP_TOP_BOTTOM).save(f"backrooms_gl_{seed}.png")
+                    print(f"saved backrooms_gl_{seed}.png")
                 elif event.key == pygame.K_r:
                     world, player, rng = new_world(None)
                     seed = world.seed
@@ -1106,6 +1180,32 @@ def main(argv=None):
         comp_prog["static_amt"].value = static_now
         comp_prog["res"].value = (float(W), float(H))
         q_comp.render()
+
+        # ------- overlays: minimap + auto-hiding guide -------
+        if show_map or hud_timer > 0:
+            ctx.enable(0x0BE2)
+            ctx.blend_func = (0x0302, 0x0303)
+            if show_map:
+                mm_timer -= dt
+                if mm_timer <= 0 or mm_surf is None:
+                    mm_timer = 0.5
+                    mm_surf = bw.render_minimap(world, player, pygame)
+                    if presence is not None:
+                        pygame.draw.circle(
+                            mm_surf, (140, 25, 25),
+                            (int(presence.x % world.cols * 2),
+                             int(presence.y % world.rows * 2)), 3)
+                if mm_surf is not None:
+                    draw_overlay("map", mm_surf, 16, 16, 0.85)
+            if hud_timer > 0:
+                hud_timer -= dt
+                hud = (f"{bw.STYLE['name']}  seed {seed}  "
+                       f"{'AUTO' if auto else 'MANUAL'}  "
+                       "TAB=drive M=map R=new F12=shot ESC=quit")
+                text = hud_font.render(hud, True, (235, 225, 170))
+                draw_overlay("hud", text, 16, H - 34,
+                             min(1.0, hud_timer / 0.5))
+            ctx.disable(0x0BE2)
 
         if not headless:
             pygame.display.flip()
