@@ -15,6 +15,40 @@ polygonal chambers. Built with Python and pygame.
 Sources: [Backrooms Wiki — Level 0](https://backrooms.fandom.com/wiki/Level_0),
 [Wikipedia — The Backrooms](https://en.wikipedia.org/wiki/The_Backrooms)
 
+## 3D walkthrough
+
+`backrooms_walk.py` renders the generated maps first-person with a software
+raycaster and walks itself through Level 0:
+
+![walkthrough](examples/walkthrough.gif)
+
+```bash
+python backrooms_walk.py                 # auto-walk demo (it drives)
+python backrooms_walk.py --manual        # you drive (WASD + arrows)
+python backrooms_walk.py --record demo.gif --seconds 8   # headless GIF (needs pillow)
+```
+
+Details pulled from Level 0 canon:
+
+- worn mono-yellow wallpaper with a darker band low on the wall, brownish
+  Berber carpet, low drop ceiling
+- fluorescent hum synthesized at 120 Hz + harmonics (`--mute` to silence),
+  with light flicker
+- **Peripheral Shift** — the map quietly re-carves itself in areas you are
+  not looking at, so retracing your steps never quite works. Watch it happen
+  on the minimap (`M`). Disable with `--no-shift`.
+- no entities. Level 0 is empty. That's the point.
+
+| Key | Action |
+| --- | --- |
+| `TAB` | Toggle auto-walk / manual |
+| `W A S D` | Move / strafe (manual) |
+| Arrows / `Q` `E` | Turn |
+| `M` | Toggle minimap |
+| `R` | New map (new seed) |
+| `F12` | Screenshot |
+| `Esc` | Quit |
+
 ## Examples
 
 Mono-yellow theme (`--seed 1234`):
@@ -89,6 +123,14 @@ spacing) live in the `Config` dataclass at the top of
 3. **Cleanup** — orphan floor specks stranded in solid wall are removed.
    Lone wall cells in open floor are deliberately kept: they read as
    pillars.
+
+## Ideas / contributions welcome
+
+- Textured walls (real wallpaper pattern instead of flat shading)
+- Ceiling light panels via floor/ceiling casting
+- Entity-free scares: distant footstep audio, lights going out in banks
+- Export maps as JSON/Tiled for use in other engines
+- Other levels (Level 1 parking garage, poolrooms, etc.)
 
 ## History
 

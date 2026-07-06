@@ -1,1 +1,3 @@
 pygame-ce>=2.5
+# Optional, only needed for `backrooms_walk.py --record` GIF recording:
+# pillow
