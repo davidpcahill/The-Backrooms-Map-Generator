@@ -76,6 +76,9 @@ a specific zone; `--frame out.png` renders a single frame headlessly;
 `--export map.json` dumps the whole world (per-cell floor/ceiling heights,
 slopes, lighting, panels) as JSON for use in other engines.
 
+Starts fullscreen (`--windowed` for a window). The guide overlay shows
+briefly at launch and after any keypress, then fades out.
+
 | Key | Action |
 | --- | --- |
 | `TAB` | Toggle auto-walk / manual |
@@ -83,6 +86,7 @@ slopes, lighting, panels) as JSON for use in other engines.
 | Arrows / `Q` `E` | Turn |
 | `M` | Toggle minimap |
 | `R` | New map (new seed) |
+| `F` | Toggle fullscreen |
 | `F12` | Screenshot |
 | `Esc` | Quit |
 

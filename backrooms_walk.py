@@ -1152,6 +1152,7 @@ def main(argv=None):
     ap.add_argument("--map-cols", type=int, default=120, help="map width in cells (pre-upscale)")
     ap.add_argument("--map-rows", type=int, default=80, help="map height in cells (pre-upscale)")
     ap.add_argument("--manual", action="store_true", help="start in manual control instead of auto-walk")
+    ap.add_argument("--windowed", action="store_true", help="start windowed instead of fullscreen")
     ap.add_argument("--no-shift", action="store_true", help="disable Peripheral Shift map warping")
     ap.add_argument("--mute", action="store_true", help="no sound")
     ap.add_argument("--record", metavar="GIF", default=None,
@@ -1178,8 +1179,11 @@ def main(argv=None):
 
     import pygame
     pygame.init()
+    flags = 0
+    if not (args.windowed or args.record or args.frame):
+        flags = pygame.FULLSCREEN | pygame.SCALED
     screen = pygame.display.set_mode(
-        (INTERNAL_W * WINDOW_SCALE, INTERNAL_H * WINDOW_SCALE))
+        (INTERNAL_W * WINDOW_SCALE, INTERNAL_H * WINDOW_SCALE), flags)
     clock = pygame.time.Clock()
     font = pygame.font.SysFont("menlo,consolas,monospace", 14)
     frame = pygame.Surface((INTERNAL_W, INTERNAL_H))
@@ -1225,6 +1229,9 @@ def main(argv=None):
     flicker_left = 0.0
     flicker_next = rng.uniform(4.0, 10.0)
 
+    # The guide overlay shows briefly at launch, then only after a keypress.
+    hud_timer = 4.0
+
     running = True
     while running:
         dt = min(clock.tick(30) / 1000.0, 0.1) if not args.record else 1 / 30.0
@@ -1233,8 +1240,11 @@ def main(argv=None):
             if event.type == pygame.QUIT:
                 running = False
             elif event.type == pygame.KEYDOWN:
+                hud_timer = 3.0
                 if event.key == pygame.K_ESCAPE:
                     running = False
+                elif event.key == pygame.K_f:
+                    pygame.display.toggle_fullscreen()
                 elif event.key == pygame.K_TAB:
                     auto = not auto
                 elif event.key == pygame.K_m:
@@ -1313,12 +1323,15 @@ def main(argv=None):
 
         if show_map:
             screen.blit(render_minimap(world, player, pygame), (12, 12))
-        hud = f"{STYLE['name']}  seed {seed}  {'AUTO' if auto else 'MANUAL'}"
-        if player.crouched():
-            hud += "  [CRAWLSPACE]"
-        hud += "  TAB=drive M=map R=new ESC=quit"
-        screen.blit(font.render(hud, True, (235, 225, 170)),
-                    (12, screen.get_height() - 24))
+        hud_timer -= dt
+        if hud_timer > 0:
+            hud = f"{STYLE['name']}  seed {seed}  {'AUTO' if auto else 'MANUAL'}"
+            if player.crouched():
+                hud += "  [CRAWLSPACE]"
+            hud += "  TAB=drive M=map R=new F=fullscreen ESC=quit"
+            text = font.render(hud, True, (235, 225, 170))
+            text.set_alpha(min(255, int(hud_timer * 400)))
+            screen.blit(text, (12, screen.get_height() - 24))
         pygame.display.flip()
 
         if args.record:
