@@ -43,7 +43,7 @@ import numpy as np
 import backrooms_walk as bw
 
 RENDER_W, RENDER_H = 1280, 800
-NEAR, FAR = 0.03, 40.0
+NEAR, FAR = 0.07, 40.0   # tighter near plane wrecks depth precision far out
 MAX_LIGHTS = 24
 CHUNK = 16
 BASE_FOV = 62.0
@@ -88,7 +88,9 @@ void main() {
     if (mat == 3) {                        // fluorescent panel: emissive
         c = base * (0.10 + 1.55 * cell_l * flick);
     } else {
-        vec3 acc = vec3(0.18) * cell_l;    // ambient tied to local light
+        // ambient tied to local light, plus a tiny unconditional floor so
+        // unlit geometry reads as dark wall, not as a hole in the world
+        vec3 acc = vec3(0.18) * cell_l + vec3(0.035);
         for (int i = 0; i < nlights; i++) {
             vec3 L = lpos[i] - wpos;
             float d = length(L);
@@ -136,7 +138,8 @@ void main() {
         fragment = vec4(0.0, 0.0, 0.0, t.a * shadow_k * (1.0 - clamp(fog, 0.0, 1.0)));
         return;
     }
-    vec3 c = t.rgb * (0.35 + 0.75 * cell_l);
+    // it is a black thing; light barely finds purchase on it
+    vec3 c = t.rgb * 0.40 * (0.30 + 0.70 * cell_l);
     fragment = vec4(mix(c, fogcol, clamp(fog, 0.0, 1.0)), t.a * (1.0 - fog * 0.85));
 }
 """
@@ -423,30 +426,43 @@ class WorldMesh:
 
         corner_cache = {}
 
-        def corner_h(cx_, cz_, ref_x, ref_y):
-            """Height of integer corner (cx_, cz_) as seen from ref cell:
-            average of adjacent open cells' planes that are level with the
-            ref cell — welds ramp seams shut while keeping stair edges
-            sharp."""
-            ref = fh(ref_x, ref_y, cx_, cz_)
-            key = (cx_, cz_, round(ref, 2))
-            got = corner_cache.get(key)
+        def corner_clusters(cx_, cz_):
+            """Cluster the plane heights of all open cells meeting at an
+            integer corner (sorted, split at gaps > 0.13). Deterministic
+            from world state alone, so every cell — in every chunk — that
+            shares this corner computes the IDENTICAL welded height.
+            The old per-cell relative averaging disagreed at T-junctions,
+            leaving hairline cracks that shredded into slivers at range."""
+            got = corner_cache.get((cx_, cz_))
             if got is not None:
                 return got
-            tot, n = 0.0, 0
+            vals = []
             for ox, oz in ((-1, -1), (0, -1), (-1, 0), (0, 0)):
                 x, y = cx_ + ox, cz_ + oz
                 if not (0 <= x < w.cols and 0 <= y < w.rows):
                     continue
-                xi, yi = x % w.cols, y % w.rows
-                if w.floor[yi][xi] < w.ceil[yi][xi]:
-                    v = fh(x, y, cx_, cz_)
-                    if abs(v - ref) < 0.13:
-                        tot += v
-                        n += 1
-            out = tot / n if n else ref
-            corner_cache[key] = out
-            return out
+                if w.floor[y][x] < w.ceil[y][x]:
+                    vals.append(fh(x, y, cx_, cz_))
+            vals.sort()
+            clusters = []
+            i = 0
+            while i < len(vals):
+                j = i
+                while j + 1 < len(vals) and vals[j + 1] - vals[j] < 0.13:
+                    j += 1
+                seg = vals[i:j + 1]
+                clusters.append((seg[0] - 1e-3, seg[-1] + 1e-3,
+                                 sum(seg) / len(seg)))
+                i = j + 1
+            corner_cache[(cx_, cz_)] = clusters
+            return clusters
+
+        def corner_h(cx_, cz_, ref_x, ref_y):
+            ref = fh(ref_x, ref_y, cx_, cz_)
+            for lo, hi, mean in corner_clusters(cx_, cz_):
+                if lo <= ref <= hi:
+                    return mean
+            return ref
 
         def quad(p1, p2, p3, p4, uvs, n, mat, sh=(1, 1, 1, 1)):
             a = (*p1, *uvs[0], *n, mat, sh[0])

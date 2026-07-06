@@ -831,6 +831,9 @@ class AutoWalker:
         self.panic = False
         self.look = 0.0          # >0: turning to look toward the thing
         self.look_cd = 0.0
+        self.heard_t = 0.0       # how recently he heard it
+        self.scan_cd = rng.uniform(15.0, 35.0)
+        self.pause_total = 0.0
 
     def plan(self, world: World, p: Player, flee_from=None):
         start = (int(p.x) % world.cols, int(p.y) % world.rows)
@@ -885,22 +888,42 @@ class AutoWalker:
         self.explore_angle += self.rng.uniform(-0.7, 0.7)
 
     def update(self, world: World, p: Player, dt, presence=None):
-        # Panic with hysteresis: something got too close. Run, and keep
-        # running until the fear has genuinely faded.
+        # Panic with hysteresis: something got too close. Run — and no one
+        # relaxes while they can still HEAR it coming.
+        if p.presence_heard:
+            self.heard_t = 4.0
+        else:
+            self.heard_t = max(0.0, self.heard_t - dt)
         was_panic = self.panic
         if p.fear > 0.62:
             self.panic = True
-        elif p.fear < 0.30:
+        elif p.fear < 0.30 and self.heard_t <= 0:
             self.panic = False
         p.running = self.panic
         if self.panic and not was_panic:
             self.pause = 0.0
             self.repath_timer = 0.0     # drop everything, plan an escape
 
+        # Getting his bearings: now and then, when things are calm, he
+        # stops and sweeps a look around — left, then right — before
+        # walking on.
+        if not self.panic and p.fear < 0.3 and self.pause <= 0 and self.look <= 0:
+            self.scan_cd -= dt
+            if self.scan_cd <= 0:
+                self.scan_cd = self.rng.uniform(20.0, 45.0)
+                self.pause = self.pause_total = self.rng.uniform(2.4, 4.2)
+                self.pause_turn = (self.rng.choice((-1, 1))
+                                   * TURN_SPEED * self.rng.uniform(0.25, 0.4))
+
         if self.pause > 0:
             self.pause -= dt
             p.want_vx = p.want_vy = 0.0
-            p.angle += self.pause_turn * dt
+            # sweep one way, then back the other
+            sign = 1.0 if (self.pause_total <= 0
+                           or self.pause > self.pause_total * 0.5) else -1.0
+            p.angle += self.pause_turn * sign * dt
+            if self.pause <= 0:
+                self.pause_total = 0.0
             return
 
         # Looking is how he knows. Hearing something behind him makes him
@@ -974,7 +997,7 @@ class AutoWalker:
         if self.idx >= len(self.path) - 1 and dist < 0.5:
             self.path = []
             if not self.panic and p.fear < 0.3 and self.rng.random() < 0.5:
-                self.pause = self.rng.uniform(0.7, 1.8)
+                self.pause = self.pause_total = self.rng.uniform(0.7, 1.8)
                 self.pause_turn = self.rng.choice((-1, 1)) * TURN_SPEED * 0.35
             return
 
@@ -1015,7 +1038,11 @@ def load_bacteria_frames(pygame_module):
         for p in range(8):
             f = sheet.subsurface((p * fw, a * fh, fw, fh))
             r = f.get_bounding_rect(min_alpha=8)
-            row.append(f.subsurface(r).copy())
+            crop = f.subsurface(r).copy()
+            # it is a black thing — pull the baked highlights way down
+            crop.fill((95, 95, 95, 255),
+                      special_flags=pygame_module.BLEND_RGBA_MULT)
+            row.append(crop)
         frames.append(row)
     return {"dirs": frames}
 
@@ -1438,15 +1465,27 @@ class Audio:
         return out
 
     def _synth_presence_step(self):
-        """A heavier tread than yours: low, unhurried, with a drag."""
+        """Multiple heavy feet on wet padded carpet: staggered low-passed
+        noise thumps (no tonal sine — tones read as chiptune sfx), each
+        with a short wet squish at contact."""
         rng = random.Random(1)
-        out = []
-        for i in range(int(SAMPLE_RATE * 0.24)):
-            t = i / SAMPLE_RATE
-            thud = math.sin(math.tau * (68 - 90 * t) * t) * math.exp(-t * 20)
-            drag = rng.uniform(-1, 1) * 0.25 * math.exp(-t * 12)
-            out.append(thud * 0.9 + drag)
-        return out
+        n = int(SAMPLE_RATE * 0.42)
+        out = [0.0] * n
+        offsets = (0.0, 0.05 + rng.uniform(0.0, 0.03),
+                   0.12 + rng.uniform(0.0, 0.05))
+        for t0 in offsets:
+            i0 = int(t0 * SAMPLE_RATE)
+            amp = rng.uniform(0.55, 0.95)
+            lp = 0.0
+            for i in range(i0, min(n, i0 + int(0.22 * SAMPLE_RATE))):
+                t = (i - i0) / SAMPLE_RATE
+                # heavy low-passed rumble: the pad of a big foot on carpet
+                lp = lp * 0.965 + rng.uniform(-1, 1) * 0.035
+                out[i] += lp * amp * math.exp(-t * 26) * 4.5
+                # wet squish transient right at contact
+                if t < 0.05:
+                    out[i] += rng.uniform(-1, 1) * math.exp(-t * 90) * 0.22 * amp
+        return [max(-0.95, min(0.95, v)) for v in out]
 
     def _synth_breath(self, heavy):
         """One breath cycle of band-limited noise: inhale swell, exhale."""
