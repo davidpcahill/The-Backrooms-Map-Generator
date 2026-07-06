@@ -38,6 +38,20 @@ Scale: 1 unit = one normal room height (~9 ft).
 | ![stairs](examples/stairs.png) | **Sunken wings & stairs** — the floor terraces down ring by ring into lower areas; steps auto-climb like stair risers. |
 | ![pitfalls](examples/pitfalls.png) | **The Pitfalls** — lattice-pattern fields of carpeted shafts ~8 m deep. Fall in and you noclip deeper: fade out, respawn somewhere else in the level. |
 
+| ![ramp](examples/ramp.png) | **Ramps & raked floors** — real sloped floors: smooth ramps down into sunken wings, and Kane Pixels-style "raked" areas where the whole floor leans a few degrees in one direction. Barely enough to notice; exactly enough to be wrong. |
+| ![level 1](examples/level1.png) | **Level 1** (`--level 1`) — the endless parking structure: formwork-lined concrete, pillar forests, rows of strip lighting, garage ramps everywhere, a deeper 60 Hz hum, and water dripping somewhere out of sight. |
+
+### Sound (all synthesized, stereo)
+
+- fluorescent **ballast buzz** — harmonic stack + filtered noise, 120 Hz on
+  Level 0, 60 Hz on Level 1 (`--mute` to silence)
+- **distant footsteps** that approach or recede, panned to a direction.
+  God save you if you hear something wandering around nearby, because it
+  sure as hell has heard you.
+- **dying lights**: now and then a bank of lights ahead strobes, clunks,
+  and dies — the area stays dark for a while, then slowly hums back to life
+- water **drips** in the garage
+
 Plus, from the same canon research:
 
 - **crawlspaces** ~4 ft tall — you auto-crouch and slow down
@@ -57,8 +71,10 @@ Plus, from the same canon research:
   seemingly forever
 - no entities. Level 0 is empty. That's the point.
 
-Useful flags: `--spawn-zone tall|crawl|pit|stairs` spawns you next to a
-specific zone; `--frame out.png` renders a single frame headlessly.
+Useful flags: `--spawn-zone tall|crawl|pit|stairs|ramp` spawns you next to
+a specific zone; `--frame out.png` renders a single frame headlessly;
+`--export map.json` dumps the whole world (per-cell floor/ceiling heights,
+slopes, lighting, panels) as JSON for use in other engines.
 
 | Key | Action |
 | --- | --- |
@@ -147,10 +163,11 @@ spacing) live in the `Config` dataclass at the top of
 
 ## Ideas / contributions welcome
 
-- Entity-free scares: distant footstep audio, lights going out in banks
-- Ramps and raked floors (Kane Pixels-style slanted crawl gaps)
-- Export maps as JSON/Tiled for use in other engines
-- Other levels (Level 1 parking garage, poolrooms, etc.)
+- More levels (the Poolrooms, Level ! run corridor, Level 37)
+- Something glimpsed at the far end of a corridor, exactly once
+- Floor/ceiling texturing (currently flat-shaded planes)
+- Multiplayer isolation: two wanderers in the same map who can hear but
+  never find each other (the canon Isolation Effect)
 
 ## History
 
