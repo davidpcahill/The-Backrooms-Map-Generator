@@ -500,6 +500,10 @@ class Player:
         self.bob_phase = 0.0
         self.bob = 0.0
         self.fell = False
+        self.fear = 0.0          # 0 calm .. 1 terror; spikes fast, decays slow
+        self.exertion = 0.0      # builds while running, recovers while walking
+        self.crouch_hint = False  # controller sees a low ceiling coming up
+        self.running = False
 
     def eye_z(self):
         return self.z + self.eye + self.bob
@@ -510,10 +514,44 @@ class Player:
                                   int(y + oy) % world.rows, max_drop)
                    for ox in (-r, r) for oy in (-r, r))
 
+    def _eye_target(self, world):
+        f, c, _, _ = world.cell(int(self.x), int(self.y))
+        clearance = c - f
+        if clearance <= 0.75:
+            return max(0.22, clearance - 0.15)
+        if self.crouch_hint:
+            return 0.36          # pre-ducking before the crawlspace
+        return EYE_STAND
+
     def apply(self, world: World, dt, max_drop):
+        # Terrain and effort shape the pace: uphill and stair-climbs are
+        # slower, downhill a touch faster, exhaustion drags, and moving
+        # while mid-crouch is slow going.
+        want_x, want_y = self.want_vx, self.want_vy
+        want_speed = math.hypot(want_x, want_y)
+        eye_target = self._eye_target(world)
+        if want_speed > 1e-4:
+            mult = 1.0
+            xi, yi = int(self.x) % world.cols, int(self.y) % world.rows
+            gx, gy = world.gx[yi][xi], world.gy[yi][xi]
+            if gx or gy:
+                uphill = (want_x * gx + want_y * gy) / want_speed
+                if uphill > 0:
+                    mult /= 1.0 + 2.8 * uphill
+                else:
+                    mult *= 1.0 + min(0.15, -0.3 * uphill)
+            if self.z < world.floor_at(self.x, self.y) - 0.02:
+                mult *= 0.72                     # hauling up a stair riser
+            if self.exertion > 0.7:
+                mult *= 1.0 - 0.25 * (self.exertion - 0.7) / 0.3
+            if abs(self.eye - eye_target) > 0.06:
+                mult *= 0.75                     # ducking down / rising up
+            want_x *= mult
+            want_y *= mult
+
         k = min(1.0, ACCEL * dt)
-        self.vx += (self.want_vx - self.vx) * k
-        self.vy += (self.want_vy - self.vy) * k
+        self.vx += (want_x - self.vx) * k
+        self.vy += (want_y - self.vy) * k
 
         dx, dy = self.vx * dt, self.vy * dt
         if self._clear(world, self.x + dx, self.y, max_drop):
@@ -525,9 +563,14 @@ class Player:
         else:
             self.vy = 0.0
 
+        speed = math.hypot(self.vx, self.vy)
+        if speed > MOVE_SPEED * 1.25:
+            self.exertion = min(1.0, self.exertion + dt / 7.0)
+        else:
+            self.exertion = max(0.0, self.exertion - dt / 11.0)
+
         # Vertical: slopes are followed directly, gravity handles drops.
         f = world.floor_at(self.x, self.y)
-        _, c, _, _ = world.cell(int(self.x), int(self.y))
         if self.z > f + 0.03:
             self.vz -= GRAVITY * dt
             self.z = max(f, self.z + self.vz * dt)
@@ -540,14 +583,19 @@ class Player:
         if self.z <= FALL_LIMIT:
             self.fell = True
 
-        clearance = c - f
-        target = EYE_STAND if clearance > 0.75 else max(0.22, clearance - 0.15)
-        self.eye += (target - self.eye) * min(1.0, 8.0 * dt)
+        # Crouching is deliberate: over a second to fold down, slower to
+        # trust standing back up — unless he's running for it.
+        if eye_target < self.eye:
+            rate = 4.5 if self.running else 2.1
+        else:
+            rate = 1.5
+        self.eye += (eye_target - self.eye) * min(1.0, rate * dt)
 
-        speed = math.hypot(self.vx, self.vy)
-        ratio = min(1.0, speed / MOVE_SPEED)
-        self.bob_phase += dt * math.tau * BOB_STRIDE_HZ * (0.4 + 0.6 * ratio)
-        self.bob = math.sin(self.bob_phase) * BOB_AMPLITUDE * ratio
+        # Stride-synced bob; running lengthens and deepens it.
+        ratio = min(1.5, speed / MOVE_SPEED)
+        self.bob_phase += dt * math.tau * BOB_STRIDE_HZ * (0.4 + 0.75 * min(ratio, 1.0))
+        amp = BOB_AMPLITUDE * (1.0 + 0.55 * max(0.0, ratio - 1.0))
+        self.bob = math.sin(self.bob_phase) * amp * min(ratio, 1.0)
 
     def crouched(self):
         return self.eye < EYE_STAND - 0.1
@@ -569,8 +617,9 @@ class AutoWalker:
         self.repath_timer = 0.0
         self.pause = 0.0
         self.pause_turn = 0.0
+        self.panic = False
 
-    def plan(self, world: World, p: Player):
+    def plan(self, world: World, p: Player, flee_from=None):
         start = (int(p.x) % world.cols, int(p.y) % world.rows)
         prev = {start: None}
         order = []
@@ -590,13 +639,22 @@ class AutoWalker:
             self.path = []
             return
 
-        def score(c):
-            dx, dy = world.wrap_delta(p.x, p.y, c[0] + 0.5, c[1] + 0.5)
-            d = math.hypot(dx, dy)
-            if d < 1e-6:
-                return -1.0
-            align = math.cos(math.atan2(dy, dx) - self.explore_angle)
-            return d * (1.0 + 0.9 * align) + self.rng.uniform(0.0, 4.0)
+        if flee_from is not None:
+            fx, fy = flee_from
+
+            def score(c):
+                dx, dy = world.wrap_delta(fx, fy, c[0] + 0.5, c[1] + 0.5)
+                away = math.hypot(dx, dy)
+                dpx, dpy = world.wrap_delta(p.x, p.y, c[0] + 0.5, c[1] + 0.5)
+                return away * 2.0 + math.hypot(dpx, dpy) * 0.3 + self.rng.uniform(0.0, 2.0)
+        else:
+            def score(c):
+                dx, dy = world.wrap_delta(p.x, p.y, c[0] + 0.5, c[1] + 0.5)
+                d = math.hypot(dx, dy)
+                if d < 1e-6:
+                    return -1.0
+                align = math.cos(math.atan2(dy, dx) - self.explore_angle)
+                return d * (1.0 + 0.9 * align) + self.rng.uniform(0.0, 4.0)
 
         goal = max(far, key=score)
         path = []
@@ -610,16 +668,34 @@ class AutoWalker:
         self.repath_timer = 14.0
         self.explore_angle += self.rng.uniform(-0.7, 0.7)
 
-    def update(self, world: World, p: Player, dt):
+    def update(self, world: World, p: Player, dt, presence=None):
+        # Panic with hysteresis: something got too close. Run, and keep
+        # running until the fear has genuinely faded.
+        was_panic = self.panic
+        if p.fear > 0.55:
+            self.panic = True
+        elif p.fear < 0.30:
+            self.panic = False
+        p.running = self.panic
+        if self.panic and not was_panic:
+            self.pause = 0.0
+            self.repath_timer = 0.0     # drop everything, plan an escape
+
         if self.pause > 0:
             self.pause -= dt
             p.want_vx = p.want_vy = 0.0
             p.angle += self.pause_turn * dt
             return
 
+        flee = None
+        if self.panic and presence is not None:
+            flee = (presence.x, presence.y)
+
         self.repath_timer -= dt
         if self.repath_timer <= 0 or self.idx >= len(self.path):
-            self.plan(world, p)
+            self.plan(world, p, flee)
+            if self.panic:
+                self.repath_timer = 3.5
             if not self.path:
                 p.want_vx = p.want_vy = 0.0
                 p.angle += TURN_SPEED * 0.4 * dt
@@ -627,7 +703,7 @@ class AutoWalker:
 
         nxt = self.path[self.idx]
         if not world.passable(p.z, nxt[0], nxt[1], WALKER_MAX_DROP):
-            self.plan(world, p)
+            self.plan(world, p, flee)
             if not self.path:
                 return
 
@@ -639,26 +715,178 @@ class AutoWalker:
             else:
                 break
 
+        # See the crawlspace coming: start folding down before the door.
+        def low_ahead(i):
+            f, c, _, _ = world.cell(*self.path[i])
+            return c - f < 0.8
+
+        p.crouch_hint = any(low_ahead(i) for i in
+                            range(self.idx, min(self.idx + 3, len(self.path))))
+
         cx, cy = self.path[self.idx]
         dx, dy = world.wrap_delta(p.x, p.y, cx + 0.5, cy + 0.5)
         dist = math.hypot(dx, dy)
 
         if self.idx >= len(self.path) - 1 and dist < 0.5:
             self.path = []
-            if self.rng.random() < 0.5:
+            if not self.panic and p.fear < 0.3 and self.rng.random() < 0.5:
                 self.pause = self.rng.uniform(0.7, 1.8)
                 self.pause_turn = self.rng.choice((-1, 1)) * TURN_SPEED * 0.35
             return
 
         target = math.atan2(dy, dx)
         diff = (target - p.angle + math.pi) % math.tau - math.pi
-        p.angle += max(-TURN_SPEED * dt, min(TURN_SPEED * dt, diff))
+        turn = TURN_SPEED * (1.6 if self.panic else 1.0)
+        p.angle += max(-turn * dt, min(turn * dt, diff))
 
         alignment = math.cos(diff)
-        speed = MOVE_SPEED * (0.55 if p.crouched() else 0.9)
+        if self.panic:
+            speed = MOVE_SPEED * 1.8            # flat-out run
+        else:
+            # Calm is a stroll; unease quickens the step.
+            speed = MOVE_SPEED * (0.78 + 0.35 * p.fear)
+        if p.crouched():
+            speed = min(speed, MOVE_SPEED * 0.55)
         speed *= max(0.0, alignment) if abs(diff) < 1.5 else 0.0
         p.want_vx = math.cos(p.angle) * speed
         p.want_vy = math.sin(p.angle) * speed
+
+
+def line_of_sight(world: World, ax, ay, bx, by) -> bool:
+    dx, dy = world.wrap_delta(ax, ay, bx, by)
+    steps = int(math.hypot(dx, dy) * 3) + 1
+    for i in range(1, steps):
+        t = i / steps
+        if world.solid(int(ax + dx * t), int(ay + dy * t)):
+            return False
+    return True
+
+
+class Presence:
+    """Something is always somewhere in the level, and it is always walking
+    toward you. It never runs. You hear it before you see it; you see it as
+    a dark figure at the end of a corridor; and if it reaches you, the
+    lights go out and you are somewhere else. It was never confirmed.
+
+    Faster than a stroll, slower than a sprint — you can outrun it, but
+    you cannot make it stop."""
+
+    SPEED = 1.05
+    STRIDE = 0.62
+
+    def __init__(self, world: World, p: Player, rng, ahead=False):
+        self.rng = rng
+        self.path = []
+        self.idx = 0
+        self.replan = 0.0
+        self.stride = 0.0
+        self.lost = 0.0
+        self.x, self.y = self._pick_spot(world, p, ahead)
+
+    def _pick_spot(self, world, p, ahead):
+        if ahead:
+            # For demos: place it down the current sightline.
+            for d in range(16, 8, -1):
+                x = int(p.x + math.cos(p.angle) * d) % world.cols
+                y = int(p.y + math.sin(p.angle) * d) % world.rows
+                if not world.solid(x, y):
+                    return x + 0.5, y + 0.5
+        cells = sorted(world.open_set)
+        for _ in range(200):
+            x, y = self.rng.choice(cells)
+            d = math.hypot(*world.wrap_delta(p.x, p.y, x + 0.5, y + 0.5))
+            if 25 < d < 45 and world.floor[y % world.rows][x % world.cols] > -1.5:
+                return x + 0.5, y + 0.5
+        x, y = self.rng.choice(cells)
+        return x + 0.5, y + 0.5
+
+    def relocate(self, world, p):
+        self.x, self.y = self._pick_spot(world, p, ahead=False)
+        self.path = []
+        self.lost = 0.0
+
+    def _plan(self, world: World, p: Player):
+        start = (int(self.x) % world.cols, int(self.y) % world.rows)
+        goal = (int(p.x) % world.cols, int(p.y) % world.rows)
+        prev = {start: None}
+        queue = deque([start])
+        found = start == goal
+        n = 0
+        while queue and n < 2500:
+            cur = queue.popleft()
+            n += 1
+            if cur == goal:
+                found = True
+                break
+            cx, cy = cur
+            for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                nb = ((cx + dx) % world.cols, (cy + dy) % world.rows)
+                if nb not in prev and world.edge_ok(cur, nb):
+                    prev[nb] = cur
+                    queue.append(nb)
+        self.replan = 2.5
+        if not found:
+            self.path = []
+            return
+        path = []
+        node = goal
+        while node is not None:
+            path.append(node)
+            node = prev[node]
+        path.reverse()
+        self.path = path
+        self.idx = min(1, len(path) - 1)
+
+    def update(self, world: World, p: Player, dt, audio) -> bool:
+        """Walk toward the player; drive fear and footstep audio.
+        Returns True the moment it reaches him."""
+        self.replan -= dt
+        if self.replan <= 0:
+            self._plan(world, p)
+        if not self.path:
+            self.lost += dt
+            if self.lost > 12.0:      # sealed off by the Shift: it finds
+                self.relocate(world, p)   # another way. It always does.
+        else:
+            self.lost = 0.0
+            while self.idx < len(self.path) - 1:
+                cx, cy = self.path[self.idx]
+                dx, dy = world.wrap_delta(self.x, self.y, cx + 0.5, cy + 0.5)
+                if math.hypot(dx, dy) < 0.6:
+                    self.idx += 1
+                else:
+                    break
+            cx, cy = self.path[self.idx]
+            dx, dy = world.wrap_delta(self.x, self.y, cx + 0.5, cy + 0.5)
+            d = math.hypot(dx, dy)
+            if d > 1e-6:
+                step = min(self.SPEED * dt, d)
+                self.x = (self.x + dx / d * step) % world.cols
+                self.y = (self.y + dy / d * step) % world.rows
+            self.stride -= dt
+            if self.stride <= 0:
+                self.stride = self.STRIDE * self.rng.uniform(0.95, 1.05)
+                if audio:
+                    pdx, pdy = world.wrap_delta(p.x, p.y, self.x, self.y)
+                    audio.presence_step(math.atan2(pdy, pdx),
+                                        math.hypot(pdx, pdy), p)
+
+        # Fear: proximity is bad, seeing it is worse. Spikes fast,
+        # lets go slowly.
+        pdx, pdy = world.wrap_delta(p.x, p.y, self.x, self.y)
+        dist = math.hypot(pdx, pdy)
+        visible = dist < 20.0 and line_of_sight(world, p.x, p.y, self.x, self.y)
+        threat = max(0.0, 1.0 - dist / 16.0)
+        target = threat if visible else threat * 0.35
+        xi, yi = int(p.x) % world.cols, int(p.y) % world.rows
+        if world.light[yi][xi] < 0.4:
+            target = max(target, 0.15)     # the dark is never comfortable
+        if target > p.fear:
+            p.fear += (target - p.fear) * min(1.0, 2.2 * dt)
+        else:
+            p.fear += (target - p.fear) * min(1.0, 0.12 * dt)
+
+        return dist < 1.25
 
 
 # ---------------------------------------------------------------------------
@@ -688,15 +916,18 @@ class Audio:
             return
         self.ok = True
         self.hum = self._sound(self._synth_hum(STYLE["hum_freq"]))
-        self.step = self._sound(self._synth_step())
+        self.pstep = self._sound(self._synth_presence_step())
         self.zap = self._sound(self._synth_lightout())
         self.drip = self._sound(self._synth_drip())
+        self.breath_calm = self._sound(self._synth_breath(False))
+        self.breath_heavy = self._sound(self._synth_breath(True))
+        self.heart = self._sound(self._synth_heartbeat())
         ch = self.hum.play(loops=-1)
         if ch:
             ch.set_volume(0.16, 0.16)
-        self.series = None
-        self.foot_timer = rng.uniform(12.0, 28.0)
         self.drip_timer = rng.uniform(5.0, 14.0)
+        self.breath_timer = 2.0
+        self.heart_timer = 1.0
 
     # -- synthesis ----------------------------------------------------------
 
@@ -725,15 +956,45 @@ class Audio:
             out.append(v * 0.5 + n * 0.35)
         return out
 
-    def _synth_step(self):
-        """A dull carpet thump: pitch-dropping thud plus a little scuff."""
+    def _synth_presence_step(self):
+        """A heavier tread than yours: low, unhurried, with a drag."""
         rng = random.Random(1)
         out = []
-        for i in range(int(SAMPLE_RATE * 0.16)):
+        for i in range(int(SAMPLE_RATE * 0.24)):
             t = i / SAMPLE_RATE
-            env = math.exp(-t * 30)
-            thud = math.sin(math.tau * (95 - 180 * t) * t)
-            out.append((thud * 0.8 + rng.uniform(-1, 1) * 0.2) * env)
+            thud = math.sin(math.tau * (68 - 90 * t) * t) * math.exp(-t * 20)
+            drag = rng.uniform(-1, 1) * 0.25 * math.exp(-t * 12)
+            out.append(thud * 0.9 + drag)
+        return out
+
+    def _synth_breath(self, heavy):
+        """One breath cycle of band-limited noise: inhale swell, exhale."""
+        rng = random.Random(3 if heavy else 4)
+        out = []
+        n = 0.0
+        dur = 1.0 if heavy else 1.5
+        for i in range(int(SAMPLE_RATE * dur)):
+            t = i / SAMPLE_RATE
+            n = n * 0.9 + rng.uniform(-1, 1) * 0.1
+            if heavy:
+                env = (math.exp(-((t - 0.18) / 0.12) ** 2) * 0.9
+                       + math.exp(-((t - 0.62) / 0.16) ** 2) * 0.7)
+            else:
+                env = (math.exp(-((t - 0.30) / 0.18) ** 2) * 0.5
+                       + math.exp(-((t - 0.95) / 0.22) ** 2) * 0.35)
+            out.append(n * env)
+        return out
+
+    def _synth_heartbeat(self):
+        """Lub-dub, felt more than heard."""
+        out = []
+        for i in range(int(SAMPLE_RATE * 0.4)):
+            t = i / SAMPLE_RATE
+            v = math.sin(math.tau * 52 * t) * math.exp(-t * 30)
+            if t >= 0.14:
+                te = t - 0.14
+                v += math.sin(math.tau * 46 * te) * math.exp(-te * 30) * 0.6
+            out.append(v)
         return out
 
     def _synth_lightout(self):
@@ -778,31 +1039,40 @@ class Audio:
         if self.ok:
             self._pan_play(self.zap, direction, p, 0.6)
 
-    def update(self, dt, p: Player):
-        """Footstep series ("it sure as hell has heard you") and drips."""
+    def presence_step(self, direction, dist, p):
+        """A real footstep from a real position: volume falls off with
+        distance, panned to where it actually is."""
         if not self.ok:
             return
-        if self.series:
-            s = self.series
-            s["t"] -= dt
-            if s["t"] <= 0:
-                self._pan_play(self.step, s["dir"], p, s["vol"])
-                s["vol"] = max(0.03, s["vol"] + s["dvol"])
-                s["n"] -= 1
-                s["t"] = s["interval"] * self.rng.uniform(0.9, 1.15)
-                if s["n"] <= 0:
-                    self.series = None
-                    self.foot_timer = self.rng.uniform(20.0, 45.0)
-        else:
-            self.foot_timer -= dt
-            if self.foot_timer <= 0:
-                approaching = self.rng.random() < 0.5
-                n = self.rng.randint(5, 9)
-                self.series = dict(
-                    n=n, t=0.0, interval=self.rng.uniform(0.38, 0.5),
-                    dir=self.rng.uniform(0, math.tau),
-                    vol=0.06 if approaching else 0.06 + 0.025 * n,
-                    dvol=0.025 if approaching else -0.025)
+        vol = min(0.5, 1.6 / max(dist, 1.0))
+        if vol > 0.015:
+            self._pan_play(self.pstep, direction, p, vol)
+
+    def update(self, dt, p: Player):
+        """Breath and heartbeat follow fear and exertion; drips are just
+        the garage being the garage."""
+        if not self.ok:
+            return
+        arousal = max(p.fear, p.exertion * 0.85)
+
+        self.breath_timer -= dt
+        if self.breath_timer <= 0:
+            self.breath_timer = 4.2 - 2.9 * arousal
+            sound = self.breath_heavy if arousal > 0.5 else self.breath_calm
+            ch = sound.play()
+            if ch:
+                vol = 0.05 + 0.28 * arousal
+                ch.set_volume(vol, vol)
+
+        self.heart_timer -= dt
+        if self.heart_timer <= 0:
+            bpm = 58 + 80 * p.fear + 28 * p.exertion
+            self.heart_timer = 60.0 / bpm
+            ch = self.heart.play()
+            if ch:
+                vol = 0.04 + 0.24 * p.fear      # quiet; felt, not heard
+                ch.set_volume(vol, vol)
+
         if STYLE["drips"]:
             self.drip_timer -= dt
             if self.drip_timer <= 0:
@@ -882,7 +1152,8 @@ class LightsOut:
 # Rendering: per-column sector casting, stepped heights, floor slopes
 # ---------------------------------------------------------------------------
 
-def render_frame(surface, world: World, p: Player, textures, pygame_module):
+def render_frame(surface, world: World, p: Player, textures, pygame_module,
+                 presence=None):
     half = HALF_H
     eye = p.eye_z()
     dirx, diry = math.cos(p.angle), math.sin(p.angle)
@@ -896,6 +1167,7 @@ def render_frame(surface, world: World, p: Player, textures, pygame_module):
     blit = surface.blit
     scale = pygame_module.transform.scale
     max_shade = SHADE_LEVELS - 1
+    depth = [MAX_DEPTH] * INTERNAL_W    # per-column occlusion for the figure
 
     surface.fill(FOG)
 
@@ -945,7 +1217,9 @@ def render_frame(surface, world: World, p: Player, textures, pygame_module):
                 my += stepy
                 side = 1
             if d_next > MAX_DEPTH:
+                depth[col] = MAX_DEPTH
                 break
+            depth[col] = d_next
             d_mid = (d_prev + d_next) * 0.5
             fog_mid = d_mid / MAX_DEPTH
 
@@ -1030,6 +1304,31 @@ def render_frame(surface, world: World, p: Player, textures, pygame_module):
             cur_l = wlight[nyi][nxi]
             cur_pan = wpanel[nyi][nxi]
             d_prev = d_next
+
+    # The figure: a dark silhouette, drawn only where the world is open
+    # behind the walls already painted. At range it sinks into the fog.
+    if presence is not None:
+        relx, rely = world.wrap_delta(p.x, p.y, presence.x, presence.y)
+        det = planex * diry - dirx * planey
+        if abs(det) > 1e-9:
+            inv = 1.0 / det
+            tx = inv * (diry * relx - dirx * rely)
+            ty = inv * (-planey * relx + planex * rely)
+            if 0.4 < ty < MAX_DEPTH:
+                sx = int(INTERNAL_W / 2 * (1.0 + tx / ty))
+                pz = world.floor_at(presence.x, presence.y)
+                feet = half + int((eye - pz) * PROJ_K / ty)
+                top = half + int((eye - (pz + 0.88)) * PROJ_K / ty)
+                w = max(1, int(0.34 * PROJ_K / ty))
+                color = shade((13, 11, 9), (ty / MAX_DEPTH) * 0.9)
+                height = feet - top
+                for cx in range(sx - w // 2, sx + w // 2 + 1):
+                    if 0 <= cx < INTERNAL_W and depth[cx] > ty:
+                        frac = abs(cx - sx) / (w / 2 + 1e-6)
+                        y0 = max(0, top + int(height * 0.12 * frac * frac))
+                        y1 = min(INTERNAL_H, feet)
+                        if y1 > y0:
+                            fill(color, (cx, y0, 1, y1 - y0))
 
 
 def render_minimap(world: World, p: Player, pygame_module):
@@ -1154,6 +1453,8 @@ def main(argv=None):
     ap.add_argument("--manual", action="store_true", help="start in manual control instead of auto-walk")
     ap.add_argument("--windowed", action="store_true", help="start windowed instead of fullscreen")
     ap.add_argument("--no-shift", action="store_true", help="disable Peripheral Shift map warping")
+    ap.add_argument("--no-entity", action="store_true",
+                    help="nothing is walking toward you (screensaver mode)")
     ap.add_argument("--mute", action="store_true", help="no sound")
     ap.add_argument("--record", metavar="GIF", default=None,
                     help="record an auto-walk GIF headlessly and exit (needs pillow)")
@@ -1217,10 +1518,13 @@ def main(argv=None):
     audio = Audio(pygame, rng, enabled=not (args.mute or args.record))
     walker = AutoWalker(rng)
     lights_out = LightsOut(rng, record=bool(args.record))
+    presence = None if args.no_entity else Presence(
+        world, player, rng, ahead=bool(args.record))
     auto = not args.manual or bool(args.record)
     show_map = False
     shift_timer = SHIFT_PERIOD
     fade = 0.0
+    caught = False
     recorded = []
     record_frames = int(args.seconds * 15) if args.record else 0
 
@@ -1254,6 +1558,8 @@ def main(argv=None):
                     seed = world.seed
                     walker = AutoWalker(rng)
                     lights_out = LightsOut(rng)
+                    if presence is not None:
+                        presence = Presence(world, player, rng)
                 elif event.key == pygame.K_F12:
                     path = f"backrooms_walk_{seed}.png"
                     pygame.image.save(screen, path)
@@ -1261,7 +1567,7 @@ def main(argv=None):
 
         if fade <= 0.0:
             if auto:
-                walker.update(world, player, dt)
+                walker.update(world, player, dt, presence)
             else:
                 keys = pygame.key.get_pressed()
                 turn = ((keys[pygame.K_RIGHT] or keys[pygame.K_e])
@@ -1269,20 +1575,40 @@ def main(argv=None):
                 player.angle += turn * TURN_SPEED * dt
                 fwd = keys[pygame.K_w] - keys[pygame.K_s]
                 strafe = keys[pygame.K_d] - keys[pygame.K_a]
+                run = keys[pygame.K_LSHIFT] or keys[pygame.K_RSHIFT]
+                player.running = bool(run and (fwd or strafe))
                 if fwd or strafe:
                     dx = math.cos(player.angle) * fwd - math.sin(player.angle) * strafe
                     dy = math.sin(player.angle) * fwd + math.cos(player.angle) * strafe
                     mag = math.hypot(dx, dy) or 1.0
-                    speed = MOVE_SPEED * (0.5 if player.crouched() else 1.0)
+                    speed = MOVE_SPEED * (1.8 if player.running else 1.0)
+                    if player.crouched():
+                        speed = min(speed, MOVE_SPEED * 0.55)
                     player.want_vx = dx / mag * speed
                     player.want_vy = dy / mag * speed
                 else:
                     player.want_vx = player.want_vy = 0.0
+                # Manual crouch anticipation: duck when the cell ahead is low.
+                fx = int(player.x + math.cos(player.angle) * 1.2)
+                fy = int(player.y + math.sin(player.angle) * 1.2)
+                af, ac, _, _ = world.cell(fx, fy)
+                player.crouch_hint = 0 < ac - af < 0.8
             player.apply(world, dt, WALKER_MAX_DROP if auto else None)
+            if presence is not None and presence.update(world, player, dt, audio):
+                caught = True
+                fade = 1.3
+                player.fear = 1.0
             if player.fell:
                 fade = 1.2
         else:
             fade -= dt
+            if fade < 0.6 and caught:
+                # It reached him. Lights out — and he's somewhere else,
+                # heart pounding. Nothing is ever confirmed on Level 0.
+                presence.relocate(world, player)
+                player.fear = 0.5
+                caught = False
+                walker = AutoWalker(rng)
             if player.fell and fade < 0.6:
                 new_p = spawn(world, rng)
                 player.x, player.y, player.angle = new_p.x, new_p.y, new_p.angle
@@ -1300,6 +1626,13 @@ def main(argv=None):
         audio.update(dt, player)
         lights_out.update(world, player, dt, audio)
 
+        # When it gets close, the lights get nervous too.
+        if presence is not None:
+            pd = math.hypot(*world.wrap_delta(player.x, player.y,
+                                              presence.x, presence.y))
+            if pd < 7.0:
+                flicker_next = min(flicker_next, rng.uniform(0.3, 1.5))
+
         if flicker_left > 0:
             flicker_left -= dt
             brightness = 1.0 if rng.random() < 0.4 else rng.uniform(0.55, 0.85)
@@ -1311,7 +1644,7 @@ def main(argv=None):
                 flicker_left = rng.uniform(0.15, 0.5)
                 flicker_next = rng.uniform(5.0, 14.0)
 
-        render_frame(frame, world, player, textures, pygame)
+        render_frame(frame, world, player, textures, pygame, presence)
         if brightness < 0.999:
             veil.set_alpha(int((1.0 - brightness) * 220))
             frame.blit(veil, (0, 0))
@@ -1322,7 +1655,13 @@ def main(argv=None):
         pygame.transform.scale(frame, screen.get_size(), screen)
 
         if show_map:
-            screen.blit(render_minimap(world, player, pygame), (12, 12))
+            mm = render_minimap(world, player, pygame)
+            if presence is not None:
+                pygame.draw.circle(
+                    mm, (110, 20, 20),
+                    (int(presence.x % world.cols * 2),
+                     int(presence.y % world.rows * 2)), 3)
+            screen.blit(mm, (12, 12))
         hud_timer -= dt
         if hud_timer > 0:
             hud = f"{STYLE['name']}  seed {seed}  {'AUTO' if auto else 'MANUAL'}"

@@ -41,13 +41,47 @@ Scale: 1 unit = one normal room height (~9 ft).
 | ![ramp](examples/ramp.png) | **Ramps & raked floors** — real sloped floors: smooth ramps down into sunken wings, and Kane Pixels-style "raked" areas where the whole floor leans a few degrees in one direction. Barely enough to notice; exactly enough to be wrong. |
 | ![level 1](examples/level1.png) | **Level 1** (`--level 1`) — the endless parking structure: formwork-lined concrete, pillar forests, rows of strip lighting, garage ramps everywhere, a deeper 60 Hz hum, and water dripping somewhere out of sight. |
 
+### The wanderer is alive now
+
+Movement is driven by effort and fear, not a constant speed:
+
+- **terrain matters** — uphill and stair-climbs are slower, downhill is a
+  touch faster, and sustained running builds exhaustion that drags the pace
+- **crouching is deliberate** — the walker sees a crawlspace coming on its
+  route and starts folding down *before* the doorway, over a good second;
+  standing back up is slower still. Unless he's running. Then he ducks fast,
+  because he has to.
+- **breathing and a quiet heartbeat**, always present, barely audible when
+  calm — rate and volume follow fear and exertion
+- **fear spikes fast and decays slow**, quickening his step before it ever
+  becomes a run
+
+### The Presence
+
+![the figure](examples/the_figure.png)
+
+Something is always somewhere in the level, and it is always *walking*
+toward you. It never runs. You hear its footsteps before you see it —
+real positional audio, louder and panned as it closes. The lights get
+nervous when it's near. Catch line of sight and there's a dark figure at
+the end of the corridor.
+
+Past a fear threshold the wanderer panics and **runs**, planning escape
+routes away from it (manual mode: hold `SHIFT` to run). You can outrun
+it. You cannot make it stop. If it ever reaches you: lights out — and
+you're somewhere else in the level, heart pounding. Nothing is ever
+confirmed on Level 0.
+
+`--no-entity` turns it off for a peaceful screensaver.
+
 ### Sound (all synthesized, stereo)
 
 - fluorescent **ballast buzz** — harmonic stack + filtered noise, 120 Hz on
   Level 0, 60 Hz on Level 1 (`--mute` to silence)
-- **distant footsteps** that approach or recede, panned to a direction.
-  God save you if you hear something wandering around nearby, because it
-  sure as hell has heard you.
+- **its footsteps**, positional and panned — approaching or receding for
+  real. God save you if you hear something wandering around nearby,
+  because it sure as hell has heard you.
+- **breathing and heartbeat** that track fear and exertion
 - **dying lights**: now and then a bank of lights ahead strobes, clunks,
   and dies — the area stays dark for a while, then slowly hums back to life
 - water **drips** in the garage
@@ -83,6 +117,7 @@ briefly at launch and after any keypress, then fades out.
 | --- | --- |
 | `TAB` | Toggle auto-walk / manual |
 | `W A S D` | Move / strafe (manual) |
+| `SHIFT` | Run (manual) |
 | Arrows / `Q` `E` | Turn |
 | `M` | Toggle minimap |
 | `R` | New map (new seed) |
@@ -168,7 +203,6 @@ spacing) live in the `Config` dataclass at the top of
 ## Ideas / contributions welcome
 
 - More levels (the Poolrooms, Level ! run corridor, Level 37)
-- Something glimpsed at the far end of a corridor, exactly once
 - Floor/ceiling texturing (currently flat-shaded planes)
 - Multiplayer isolation: two wanderers in the same map who can hear but
   never find each other (the canon Isolation Effect)
