@@ -420,11 +420,31 @@ class World:
             frontier.append(n)
         return blob
 
+    def _fill_holes(self, blob, min_n=5, passes=3):
+        """Grow a blob over enclosed speckle holes: an open cell mostly
+        surrounded by the blob joins it. Without this, tall halls keep
+        random normal-height cells whose ceilings float mid-air."""
+        nbrs8 = tuple((dx, dy) for dx in (-1, 0, 1) for dy in (-1, 0, 1)
+                      if dx or dy)
+        for _ in range(passes):
+            cand = set()
+            for x, y in blob:
+                for dx, dy in nbrs8:
+                    c = (x + dx, y + dy)
+                    if c not in blob and c in self.open_set:
+                        cand.add(c)
+            add = {c for c in cand
+                   if sum((c[0] + dx, c[1] + dy) in blob for dx, dy in nbrs8) >= min_n}
+            if not add:
+                break
+            blob |= add
+        return blob
+
     def _add_tall_halls(self, rng):
         # Canon: "massive chambers with pillars in lattice or grid patterns"
         for _ in range(rng.randint(*STYLE["tall"])):
             h = rng.uniform(*STYLE["tall_h"])
-            blob = self._blob(rng, rng.randint(150, 600))
+            blob = self._fill_holes(self._blob(rng, rng.randint(150, 600)))
             for x, y in blob:
                 if self.ceil[y][x] > 0:
                     self.ceil[y][x] = h
@@ -621,12 +641,15 @@ class World:
         return dx, dy
 
     def peripheral_shift(self, px, py, rng):
+        """Returns the list of changed cells so a mesh renderer can rebuild
+        only the chunks it must."""
+        changed = []
         for _ in range(20):
             x, y = rng.randrange(self.cols), rng.randrange(self.rows)
             if math.hypot(*self.wrap_delta(px, py, x, y)) > SHIFT_SAFE_RADIUS:
                 break
         else:
-            return
+            return changed
         if rng.random() < 0.7:
             for _ in range(rng.randint(20, 70)):
                 if self.solid(x, y):
@@ -639,10 +662,11 @@ class World:
                     else:
                         self.floor[y][x] = 0.0
                         self.ceil[y][x] = STYLE["ceil_norm"]
+                    changed.append((x, y))
                 x = (x + rng.choice((1, -1, 0, 0))) % self.cols
                 y = (y + rng.choice((0, 0, 1, -1))) % self.rows
                 if math.hypot(*self.wrap_delta(px, py, x, y)) <= SHIFT_SAFE_RADIUS:
-                    return
+                    return changed
         else:
             for _ in range(rng.randint(3, 10)):
                 wx = (x + rng.randint(-4, 4)) % self.cols
@@ -650,6 +674,8 @@ class World:
                 if (math.hypot(*self.wrap_delta(px, py, wx, wy)) > SHIFT_SAFE_RADIUS
                         and self.floor[wy][wx] == 0.0):
                     self.ceil[wy][wx] = 0.0
+                    changed.append((wx, wy))
+        return changed
 
 
 # ---------------------------------------------------------------------------
@@ -1143,6 +1169,9 @@ class Presence:
         sxi, syi = int(self.x) % world.cols, int(self.y) % world.rows
         light_there = world.light[syi][sxi]
         vis_range = 4.0 + 16.0 * max(0.1, light_there)
+        # Zooming the camera at it genuinely extends his sight (GL mode).
+        if abs(rel) < 0.35:
+            vis_range *= getattr(p, "zoom_boost", 1.0)
         los = dist < 24.0 and line_of_sight(world, p.x, p.y, self.x, self.y)
         seen = dist < vis_range and abs(rel) < 1.0 and los
         heard = dist < 13.0

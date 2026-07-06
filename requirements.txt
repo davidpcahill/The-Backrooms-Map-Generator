@@ -1,4 +1,5 @@
 pygame-ce>=2.5
-numpy>=1.26        # post-processing (bloom/vignette/grain); optional, degrades gracefully
-# Optional, only needed for `backrooms_walk.py --record` GIF recording:
+numpy>=1.26        # post-processing + GL mesh building
+moderngl>=5.10     # backrooms_gl.py GPU renderer
+# Optional, only needed for --record GIF recording:
 # pillow

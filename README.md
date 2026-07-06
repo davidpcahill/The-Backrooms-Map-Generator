@@ -15,6 +15,35 @@ polygonal chambers. Built with Python and pygame.
 Sources: [Backrooms Wiki — Level 0](https://backrooms.fandom.com/wiki/Level_0),
 [Wikipedia — The Backrooms](https://en.wikipedia.org/wiki/The_Backrooms)
 
+## GL walkthrough (new — this is the one)
+
+![gl corridor](examples/gl_corridor.png)
+
+`backrooms_gl.py` renders the same simulation on the GPU with ModernGL:
+
+```bash
+pip install moderngl
+python backrooms_gl.py            # fullscreen found footage
+python backrooms_gl.py --manual   # you hold the camera
+```
+
+- **real lighting**: every live fluorescent panel is a point light; light
+  pools under fixtures and dies off into the dark. Blackouts, dying
+  lights, and the Presence's darkness trail all reach the shader.
+- **real geometry**: slopes, stairs, lintels, pillars as actual triangles
+- **a camcorder lens**, because the wanderer is *filming* this: he
+  auto-zooms down dark corridors to check them (zoom genuinely extends
+  how far he can see), telephoto shake, focus breathing, auto-exposure
+  that overshoots between dark and light, barrel distortion, chromatic
+  aberration, grain, scanlines
+- bloom that makes fluorescents glow like fluorescents; the Howler as a
+  lit billboard with its baked walk cycle
+
+![gl demo](examples/gl_walkthrough.gif)
+
+The pygame renderer below still works everywhere (no GPU needed) and
+remains what the packaged app uses for now.
+
 ## 3D walkthrough
 
 `backrooms_walk.py` renders the generated maps first-person with a software
