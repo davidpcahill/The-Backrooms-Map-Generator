@@ -286,7 +286,7 @@ def perspective(fov_deg, aspect, near, far):
     return m
 
 
-def view_matrix(pos, yaw, pitch):
+def view_matrix(pos, yaw, pitch, roll=0.0):
     cy, sy = math.cos(yaw), math.sin(yaw)
     cp, sp = math.cos(pitch), math.sin(pitch)
     fwd = np.array([cy * cp, sp, sy * cp], dtype=np.float32)
@@ -294,6 +294,9 @@ def view_matrix(pos, yaw, pitch):
     right = np.cross(fwd, up0)
     right /= np.linalg.norm(right)
     up = np.cross(right, fwd)
+    if roll:
+        cr, sr = math.cos(roll), math.sin(roll)
+        right, up = right * cr + up * sr, up * cr - right * sr
     m = np.identity(4, dtype=np.float32)
     m[0, :3] = [right[0], up[0], -fwd[0]]
     m[1, :3] = [right[1], up[1], -fwd[1]]
@@ -638,7 +641,10 @@ class Camcorder:
         breathing = abs(self.zoom_target - self.zoom) * 1.6
         fov = BASE_FOV / self.zoom * (1.0 + math.sin(t * 6.0) * 0.006 * breathing)
         self.pitch += (sp - self.pitch) * min(1.0, 6.0 * dt)
-        return fov, sy, self.pitch
+        # handheld roll noise: no human keeps a camera level
+        rn = (math.sin(t * 1.1 + 0.9) * 0.6 + math.sin(t * 3.1 + 2.7) * 0.3
+              + math.sin(t * 7.7) * 0.1) * amp * 1.6
+        return fov, sy, self.pitch, rn
 
 
 class Exposure:
@@ -860,6 +866,11 @@ def main(argv=None):
     death_t = None          # time into the death sequence
     blood_resid = 0.0       # blood stays on the lens after a respawn
     death_pitch = 0.0
+    death_roll = 0.0
+    death_roll_dir = 1.0
+    prev_yaw = player.angle
+    yaw_rate_s = 0.0
+    roll = 0.0
     shift_timer = bw.SHIFT_PERIOD
     brightness = 1.0
     flicker_left = 0.0
@@ -927,10 +938,11 @@ def main(argv=None):
             presence.y = player.y + math.sin(player.angle) * d
             presence.heading = player.angle + math.pi
             presence.anim_phase += dt * 6.0
-            if death_t > 0.85:      # the camera goes down with him
+            if death_t > 0.85:      # the camera goes down with him, sideways
                 k = min(1.0, (death_t - 0.85) / 0.5)
                 player.eye = bw.EYE_STAND * (1 - k) + 0.10 * k
                 death_pitch = -0.85 * k
+                death_roll = 0.62 * k * death_roll_dir
             if death_t > 2.55:      # tape cuts; somewhere else, later
                 np_ = bw.spawn(world, rng)
                 player.x, player.y, player.angle = np_.x, np_.y, np_.angle
@@ -942,6 +954,7 @@ def main(argv=None):
                 walker = bw.AutoWalker(rng)
                 blood_resid = 0.55
                 death_pitch = 0.0
+                death_roll = 0.0
                 death_t = None
         # ------- simulation (same beats as backrooms_walk.main) -------
         elif fade <= 0.0:
@@ -970,6 +983,7 @@ def main(argv=None):
             player.apply(world, dt, bw.WALKER_MAX_DROP if auto else None)
             if presence is not None and presence.update(world, player, dt, audio):
                 death_t = 0.0
+                death_roll_dir = rng.choice((-1.0, 1.0))
                 if audio.ok:
                     audio.play_scream(player.presence_bearing, 1.5, player)
                     audio.play_death()
@@ -1020,14 +1034,30 @@ def main(argv=None):
                 flicker_next = rng.uniform(5.0, 14.0)
 
         # ------- camera + exposure -------
-        fov, sway_yaw, pitch = cam.update(dt, player, walker, world)
+        fov, sway_yaw, pitch, roll_noise = cam.update(dt, player, walker, world)
         ev = exposure.update(dt, world, player, brightness)
         eye = (player.x, player.eye_z(), player.y)
         yaw = player.angle + getattr(player, "sway", 0.0) + sway_yaw
+
+        # Roll: the camera banks into fast pans (a frantic look-back tilts
+        # hard), sways with the stride, and never sits perfectly level.
+        d_yaw = (yaw - prev_yaw + math.pi) % math.tau - math.pi
+        prev_yaw = yaw
+        yaw_rate = d_yaw / max(dt, 1e-3)
+        yaw_rate_s += (yaw_rate - yaw_rate_s) * min(1.0, 8.0 * dt)
+        speed = math.hypot(player.vx, player.vy)
+        stride_roll = math.sin(player.bob_phase * 0.5) * 0.014 * min(
+            1.0, speed / bw.MOVE_SPEED)
+        roll_target = max(-0.38, min(0.38, -yaw_rate_s * 0.055)) \
+            + stride_roll + roll_noise
+        roll += (roll_target - roll) * min(1.0, 9.0 * dt)
+
         pitch += death_pitch
+        total_roll = roll + death_roll
         if death_t is not None:     # violent struggle shake
             yaw += rng.uniform(-0.05, 0.05)
             pitch += rng.uniform(-0.04, 0.04)
+            total_roll += rng.uniform(-0.05, 0.05)
         blood_resid = max(0.0, blood_resid - dt * 0.02)
 
         # ------- render scene -------
@@ -1036,7 +1066,8 @@ def main(argv=None):
         lg_tex.write(light_np.tobytes())
 
         proj = perspective(fov, W / H, NEAR, FAR)
-        viewm = view_matrix(np.array(eye, dtype=np.float32), yaw, pitch)
+        viewm = view_matrix(np.array(eye, dtype=np.float32), yaw, pitch,
+                            total_roll)
         mvp = (viewm @ proj).astype(np.float32)
 
         scene_fbo.use()
