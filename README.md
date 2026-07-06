@@ -66,11 +66,30 @@ real positional audio, louder and panned as it closes. The lights get
 nervous when it's near. Catch line of sight and there's a dark figure at
 the end of the corridor.
 
+It runs a real state machine:
+
+- **STALK** — unseen, it rubber-bands: the farther away, the faster it
+  covers ground. It is always closing.
+- **LURK** — catch it in your sights at range and it *stops and stands
+  there*. Stare too long and it starts walking anyway.
+- **HUNT** — inside eight cells it commits, and it **screams** once — a
+  distorted descending shriek. Breaking line of sight long enough drops
+  it back to stalking. A continuous low growl gives away how close it is.
+
+It **kills the lights around itself** as it moves, approaching inside its
+own pocket of darkness — and seeing it requires light where it stands, so
+you look back down the corridor and see nothing at all. The lights
+recover after it passes. That's how you know it was there.
+
 Fear is **perception, not radar**: the wanderer only fears what he can
-see (line of sight, in his field of view) or hear. Footsteps behind him
-make him stop, turn, and *look* — and mid-chase he throws glances over
-his shoulder every few seconds without breaking stride. Confirmation is
-what breaks him into a run.
+see (line of sight, in his field of view, enough light) or hear.
+Footsteps behind him make him stop, turn, and *look* — and mid-chase he
+throws glances over his shoulder every few seconds without breaking
+stride. Confirmation is what breaks him into a run.
+
+Chases are dangerous now: running builds exhaustion that cuts his top
+speed nearly in half, while the hunt never tires. Fresh, you outrun it;
+winded, you escape only by breaking its line of sight.
 
 It never teleports. If the Peripheral Shift walls it off, it waits —
 only after a long time sealed away does it turn up somewhere else. It
@@ -91,6 +110,10 @@ numpy is missing): the fluorescent panels **bloom**, a soft **vignette**
 tightens and darkens as fear rises, and **film grain** sits over
 everything, heavier when he's scared. A slight head sway rides on the
 stride. `--hires` renders at 640x400 instead of 480x300.
+
+On top of that, a **VHS layer** (`--no-vhs` to drop it): scanlines,
+chroma bleed, a timecode in the corner, and tracking errors that tear
+across the frame — more often when he's terrified.
 
 ### Sound (all synthesized, stereo)
 
