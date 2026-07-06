@@ -101,6 +101,19 @@ real positional audio, louder and panned as it closes. The lights get
 nervous when it's near. Catch line of sight and there's a dark figure at
 the end of the corridor.
 
+It builds tension before it ever commits: for the first stretch it only
+**stalks** — pacing you from twelve cells out, footsteps and knocks and
+the occasional glimpse, never closing. Time feeds its nerve. Seeing it
+feeds its nerve. Walking toward it feeds its nerve *fast*. Only past the
+threshold does the real pursuit begin — and in the GL renderer, getting
+caught is now a proper found-footage death: the lunge fills the frame,
+the camera goes down with him, blood on the lens (it stays there a long
+while after), then the tape cuts to static.
+
+The lights around it don't politely dim anymore either — they stutter
+and misbehave, and occasionally one actually breaks and stays broken
+until well after it has passed.
+
 It runs a real state machine:
 
 - **STALK** — unseen, it rubber-bands: the farther away, the faster it

@@ -370,6 +370,7 @@ class World:
 
     def __init__(self, seed: int, cols: int, rows: int):
         self.seed = seed
+        self.bounded = False    # GL mode: sealed borders, no wraparound
         rng = random.Random(seed ^ 0x5EED)
         cfg = bg.Config(width=cols * 8, height=rows * 8, cell_size=8,
                         **STYLE["gen"])
@@ -613,6 +614,8 @@ class World:
         return base
 
     def passable(self, from_z: float, x: int, y: int, max_drop: float | None) -> bool:
+        if self.bounded and not (0 <= x < self.cols and 0 <= y < self.rows):
+            return False
         f, c, _, _ = self.cell(x, y)
         if f >= c:
             return False
@@ -636,6 +639,8 @@ class World:
         return True
 
     def wrap_delta(self, ax, ay, bx, by):
+        if self.bounded:
+            return bx - ax, by - ay
         dx = (bx - ax + self.cols / 2) % self.cols - self.cols / 2
         dy = (by - ay + self.rows / 2) % self.rows - self.rows / 2
         return dx, dy
@@ -708,8 +713,9 @@ class Player:
 
     def _clear(self, world, x, y, max_drop):
         r = PLAYER_RADIUS
-        return all(world.passable(self.z, int(x + ox) % world.cols,
-                                  int(y + oy) % world.rows, max_drop)
+        # raw (unwrapped) coords so bounded worlds can refuse the border
+        return all(world.passable(self.z, math.floor(x + ox),
+                                  math.floor(y + oy), max_drop)
                    for ox in (-r, r) for oy in (-r, r))
 
     def _eye_target(self, world):
@@ -833,6 +839,9 @@ class AutoWalker:
             order.append(cur)
             cx, cy = cur
             for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                if world.bounded and not (0 <= cx + dx < world.cols
+                                          and 0 <= cy + dy < world.rows):
+                    continue
                 n = ((cx + dx) % world.cols, (cy + dy) % world.rows)
                 if n not in prev and world.edge_ok(cur, n):
                     prev[n] = cur
@@ -876,7 +885,7 @@ class AutoWalker:
         # Panic with hysteresis: something got too close. Run, and keep
         # running until the fear has genuinely faded.
         was_panic = self.panic
-        if p.fear > 0.55:
+        if p.fear > 0.62:
             self.panic = True
         elif p.fear < 0.30:
             self.panic = False
@@ -1076,7 +1085,13 @@ class Presence:
         self.scream_cd = 0.0
         self.anim_phase = 0.0
         self.heading = 0.0
-        self.dimmed = {}         # cells it darkened: (x,y) -> (light, panel)
+        self.dimmed = {}         # cells it's disturbing: (x,y) -> (light, panel)
+        self.killed = {}         # lights it broke: (x,y) -> (light, panel, t)
+        # Tension: it stalks first. Early on it keeps its distance and just
+        # lets itself be heard; only once tension has built does it close.
+        # Sightings feed it. Crowding it feeds it faster.
+        self.tension = 0.75 if ahead else 0.0
+        self.seen_prev = False
         self.x, self.y = self._pick_spot(world, p, ahead)
 
     def _pick_spot(self, world, p, ahead):
@@ -1116,6 +1131,9 @@ class Presence:
                 break
             cx, cy = cur
             for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                if world.bounded and not (0 <= cx + dx < world.cols
+                                          and 0 <= cy + dy < world.rows):
+                    continue
                 nb = ((cx + dx) % world.cols, (cy + dy) % world.rows)
                 if nb not in prev and world.edge_ok(cur, nb):
                     prev[nb] = cur
@@ -1133,26 +1151,49 @@ class Presence:
         self.path = path
         self.idx = min(1, len(path) - 1)
 
-    def _darkness_trail(self, world: World):
-        """It kills the lights around itself as it moves — it approaches
-        inside its own darkness. Lights recover once it has passed."""
+    def _light_disturbance(self, world: World, dt):
+        """The lights get nervous around it: erratic stutter, not a tidy
+        moving void. Occasionally one actually dies and stays dead until
+        well after it has passed. Far more unsettling than a spotlight of
+        darkness that announces exactly where it is."""
         cx, cy = self.x, self.y
         for yy in range(int(cy) - 3, int(cy) + 4):
             for xx in range(int(cx) - 3, int(cx) + 4):
                 xi, yi = xx % world.cols, yy % world.rows
-                d = math.hypot(xx + 0.5 - cx, yy + 0.5 - cy)
                 key = (xi, yi)
-                if d < 2.5 and key not in self.dimmed and world.light[yi][xi] > 0.3:
-                    self.dimmed[key] = (world.light[yi][xi], world.panel[yi][xi])
-                    world.light[yi][xi] = 0.22
-                    world.panel[yi][xi] = False
+                d = math.hypot(xx + 0.5 - cx, yy + 0.5 - cy)
+                if d < 2.6 and key not in self.killed:
+                    if key not in self.dimmed and world.light[yi][xi] > 0.35:
+                        self.dimmed[key] = (world.light[yi][xi],
+                                            world.panel[yi][xi])
+                    if key in self.dimmed:
+                        orig = self.dimmed[key][0]
+                        world.light[yi][xi] = orig * self.rng.uniform(0.3, 1.0)
+                        if (world.panel[yi][xi]
+                                and self.rng.random() < 0.0035):
+                            self.killed[key] = (*self.dimmed.pop(key),
+                                                self.rng.uniform(9.0, 18.0))
+                            world.light[yi][xi] = 0.15
+                            world.panel[yi][xi] = False
         for key in list(self.dimmed):
             xi, yi = key
             dx, dy = world.wrap_delta(cx, cy, xi + 0.5, yi + 0.5)
-            if math.hypot(dx, dy) > 4.5:
+            if math.hypot(dx, dy) > 3.6:
                 orig_light, orig_panel = self.dimmed.pop(key)
                 world.light[yi][xi] = orig_light
                 world.panel[yi][xi] = orig_panel
+        for key in list(self.killed):
+            xi, yi = key
+            orig_light, orig_panel, t = self.killed[key]
+            dx, dy = world.wrap_delta(cx, cy, xi + 0.5, yi + 0.5)
+            if math.hypot(dx, dy) > 5.0:
+                t -= dt
+                if t <= 0:
+                    world.light[yi][xi] = orig_light
+                    world.panel[yi][xi] = orig_panel
+                    del self.killed[key]
+                    continue
+            self.killed[key] = (orig_light, orig_panel, t)
 
     def update(self, world: World, p: Player, dt, audio) -> bool:
         """Perceive, decide, move. Returns True the moment it reaches him."""
@@ -1179,7 +1220,9 @@ class Presence:
         if seen:
             target = threat
         elif heard:
-            target = threat * (0.85 if dist < 5.0 else 0.5)
+            # Sound alone unnerves but rarely breaks him — he has to SEE
+            # it (or have it nearly on top of him) to run.
+            target = threat * (0.8 if dist < 4.0 else 0.42)
         else:
             target = 0.0
         xi, yi = int(p.x) % world.cols, int(p.y) % world.rows
@@ -1194,10 +1237,23 @@ class Presence:
         p.presence_seen = seen
         p.presence_heard = heard
 
-        # --- State machine: STALK (unseen, rubber-band pace), LURK
-        # (stared at from range: it stops and stands), HUNT (close: it
-        # commits, and it screams once when it does).
-        if dist < 8.0:
+        # --- Tension: horror is the build-up. Early on it only stalks —
+        # holds its distance, lets itself be heard, shows itself in
+        # glimpses. Time feeds it. Sightings feed it. Crowding it feeds
+        # it fast. Only past the threshold does it truly come for him.
+        if seen and not self.seen_prev:
+            self.tension = min(1.0, self.tension + 0.10)
+        self.seen_prev = seen
+        self.tension = min(1.0, self.tension + dt / 130.0)
+        shy = self.tension < 0.5
+        if shy and dist < 5.0:
+            self.tension = min(1.0, self.tension + dt / 12.0)
+
+        # --- State machine: STALK (rubber-band pace, but a shy stalker
+        # holds a respectful, horrible distance), LURK (stared at from
+        # range: it stops and stands), HUNT (it commits — with a scream).
+        hunt_range = 2.2 if shy else 5.5
+        if dist < hunt_range:
             if self.state != "hunt":
                 self.state = "hunt"
                 self.blind_t = 0.0
@@ -1226,7 +1282,13 @@ class Presence:
             speed = 2.5 if p.exertion > 0.8 else 2.25
         elif self.state == "lurk":
             # It stands still while you watch... for a while.
-            speed = 0.0 if self.lurk_t < 5.0 else 0.9
+            patience = 5.0 if not shy else 11.0
+            speed = 0.0 if self.lurk_t < patience else 0.9
+        elif shy:
+            # Stalking phase: it closes to the edge of earshot and waits
+            # there, pacing you. Footsteps in the dark. Nothing more. Yet.
+            speed = 0.0 if dist < 12.0 else \
+                1.1 + min(1.3, max(0.0, (dist - 13.0) * 0.11))
         else:
             # Rubber-band stalk: farther away, it covers ground faster.
             speed = 1.25 + min(1.3, max(0.0, (dist - 6.0) * 0.11))
@@ -1264,7 +1326,7 @@ class Presence:
                 if audio:
                     audio.presence_step(bearing, dist, p)
 
-        self._darkness_trail(world)
+        self._light_disturbance(world, dt)
         if audio:
             audio.set_growl(dist, bearing, p)
 
@@ -1309,6 +1371,8 @@ class Audio:
         self.swell = self._sound(self._synth_swell())
         self.growl = self._sound(self._synth_growl())
         self.scream = self._sound(self._synth_scream())
+        self.pain = self._sound(self._synth_pain())
+        self.impact = self._sound(self._synth_impact())
         self.growl_ch = self.growl.play(loops=-1)
         if self.growl_ch:
             self.growl_ch.set_volume(0.0, 0.0)
@@ -1483,25 +1547,81 @@ class Audio:
         return out
 
     def _synth_scream(self):
-        """The shriek: a distorted descending wail with vibrato, ragged
-        with noise. You hear this once per encounter, when it commits."""
+        """The shriek. No smooth pitch sweeps (they read as sci-fi laser)
+        — a scream is ROUGH: jittering fundamental, harsh amplitude
+        roughness at ~45 Hz, formant bands, breath noise, hard clipping,
+        and ragged re-attacks like something forcing air it doesn't have."""
         rng = random.Random(9)
         out = []
-        for i in range(int(SAMPLE_RATE * 1.7)):
+        n = 0.0
+        f = 340.0
+        phases = [0.0] * 5
+        for i in range(int(SAMPLE_RATE * 1.6)):
             t = i / SAMPLE_RATE
-            f = 920 - 480 * (t / 1.7) + math.sin(math.tau * 7 * t) * 55
-            v = (math.sin(math.tau * f * t)
-                 + 0.55 * math.sin(math.tau * f * 2.03 * t)
-                 + 0.3 * math.sin(math.tau * f * 0.5 * t))
-            v = max(-1.0, min(1.0, v * 2.6))                        # distortion
-            v += rng.uniform(-1, 1) * 0.25
-            if t < 0.06:
-                env = t / 0.06
-            elif t < 1.1:
-                env = 1.0
+            # fundamental wanders and cracks, never glides
+            if i % 320 == 0:
+                f = 340 + rng.uniform(-50, 60) + (90 if rng.random() < 0.12 else 0)
+            v = 0.0
+            for k in range(5):
+                phases[k] += math.tau * f * (k + 1) * (1.0 + 0.004 * k) / SAMPLE_RATE
+                v += math.sin(phases[k]) / (k + 1) ** 0.7
+            # vocal roughness: brutal AM around 45 Hz
+            v *= 0.55 + 0.45 * math.sin(math.tau * 45 * t + math.sin(t * 31) * 2)
+            # formant screech bands + breath
+            v += math.sin(math.tau * 1250 * t + math.sin(math.tau * 9 * t) * 3) * 0.30
+            v += math.sin(math.tau * 2600 * t) * 0.12
+            n = n * 0.7 + rng.uniform(-1, 1) * 0.3
+            v += n * 0.30
+            v = max(-1.0, min(1.0, v * 2.2))         # hard clip = torn throat
+            if t < 0.05:
+                env = t / 0.05
             else:
-                env = math.exp(-(t - 1.1) * 4.0)
+                env = 1.0
+                for dip in (0.62, 1.05):             # ragged re-attacks
+                    if dip < t < dip + 0.07:
+                        env = 0.25
+                if t > 1.25:
+                    env *= math.exp(-(t - 1.25) * 5.0)
+            out.append(v * env * 0.85)
+        return out
+
+    def _synth_pain(self):
+        """The wanderer. A human scream breaking into cracks."""
+        rng = random.Random(10)
+        out = []
+        f = 470.0
+        ph = 0.0
+        n = 0.0
+        for i in range(int(SAMPLE_RATE * 1.25)):
+            t = i / SAMPLE_RATE
+            if i % 256 == 0:
+                f = max(240.0, f - rng.uniform(0, 4)
+                        + (rng.uniform(-120, 60) if rng.random() < 0.09 else 0))
+            ph += math.tau * f / SAMPLE_RATE
+            v = math.sin(ph) * 0.7 + math.sin(ph * 2.01) * 0.35
+            v *= 0.6 + 0.4 * math.sin(math.tau * 38 * t)
+            v += math.sin(math.tau * 900 * t) * 0.22 + math.sin(math.tau * 1400 * t) * 0.12
+            n = n * 0.75 + rng.uniform(-1, 1) * 0.25
+            v += n * 0.28
+            v = max(-1.0, min(1.0, v * 1.9))
+            env = min(1.0, t / 0.04) * (1.0 if t < 0.85 else math.exp(-(t - 0.85) * 6.0))
             out.append(v * env * 0.8)
+        return out
+
+    def _synth_impact(self):
+        """Wet impact: a body-thud with a squelch, no pitch to it."""
+        rng = random.Random(11)
+        out = []
+        y1 = y2 = 0.0
+        r = 0.97
+        for i in range(int(SAMPLE_RATE * 0.5)):
+            t = i / SAMPLE_RATE
+            v = math.sin(math.tau * (72 - 60 * t) * t) * math.exp(-t * 22) * 0.9
+            w = math.tau * (500 - 250 * t) / SAMPLE_RATE
+            x = rng.uniform(-1, 1) * math.exp(-t * 12) * 0.4
+            y = 2 * r * math.cos(w) * y1 - r * r * y2 + x
+            y2, y1 = y1, y
+            out.append(max(-1.0, min(1.0, v + y * 2.0)))
         return out
 
     def _synth_drip(self):
@@ -1566,6 +1686,17 @@ class Audio:
         if self.ok:
             self._pan_play(self.scream, direction, p,
                            min(0.75, 3.0 / max(dist, 2.0) ** 0.5))
+
+    def play_death(self):
+        """The catch: impact, then him."""
+        if not self.ok:
+            return
+        ch = self.impact.play()
+        if ch:
+            ch.set_volume(0.85, 0.85)
+        ch = self.pain.play()
+        if ch:
+            ch.set_volume(0.8, 0.8)
 
     def set_hum_proximity(self, panel_dist, brightness):
         """The hum belongs to the lights: loud under a live panel, faint in

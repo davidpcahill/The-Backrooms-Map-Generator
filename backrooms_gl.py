@@ -43,7 +43,7 @@ import numpy as np
 import backrooms_walk as bw
 
 RENDER_W, RENDER_H = 1280, 800
-NEAR, FAR = 0.05, 40.0
+NEAR, FAR = 0.03, 40.0
 MAX_LIGHTS = 24
 CHUNK = 16
 BASE_FOV = 62.0
@@ -179,6 +179,8 @@ uniform float time;
 uniform float fear;
 uniform float grain_amt;
 uniform float tear;      // y center of a tracking tear, <0 = none
+uniform float blood;     // blood on the lens, 0..1
+uniform float static_amt;
 uniform vec2 res;
 in vec2 uv; out vec4 fragment;
 
@@ -206,6 +208,23 @@ void main() {
     col += g * grain_amt;
     col *= 1.0 - 0.05 * step(0.5, fract(uv.y * res.y * 0.5)); // scanlines
     if (suv.x < 0.0 || suv.x > 1.0 || suv.y < 0.0 || suv.y > 1.0) col = vec3(0.0);
+    // blood on the lens: dark red splatter blobs, drying at the edges
+    if (blood > 0.003) {
+        vec2 bp[6] = vec2[](vec2(0.14, 0.22), vec2(0.87, 0.33), vec2(0.28, 0.86),
+                            vec2(0.74, 0.82), vec2(0.52, 0.08), vec2(0.05, 0.6));
+        float m = 0.0;
+        for (int k = 0; k < 6; k++) {
+            float rr = 0.09 + 0.15 * hash(bp[k] * 7.3);
+            float dd = length((uv - bp[k]) * vec2(res.x / res.y, 1.0));
+            m += smoothstep(rr, rr * 0.3, dd) * (0.7 + 0.3 * hash(uv * 40.0 + bp[k]));
+        }
+        m = clamp(m, 0.0, 1.0) * blood;
+        col = mix(col, vec3(0.28, 0.012, 0.008) * (0.4 + 0.6 * dot(col, vec3(0.5))), m * 0.94);
+    }
+    if (static_amt > 0.0) {
+        col = mix(col, vec3(hash(uv * res + vec2(time * 151.0, time * 77.0))),
+                  static_amt * 0.92);
+    }
     fragment = vec4(col, 1.0);
 }
 """
@@ -375,6 +394,8 @@ class WorldMesh:
             tot, n = 0.0, 0
             for ox, oz in ((-1, -1), (0, -1), (-1, 0), (0, 0)):
                 x, y = cx_ + ox, cz_ + oz
+                if not (0 <= x < w.cols and 0 <= y < w.rows):
+                    continue
                 xi, yi = x % w.cols, y % w.rows
                 if w.floor[yi][xi] < w.ceil[yi][xi]:
                     v = fh(x, y, cx_, cz_)
@@ -451,8 +472,11 @@ class WorldMesh:
                         (-1, 0, (1, 0, 0), ((x, y), (x, y + 1))),
                         (0, 1, (0, 0, -1), ((x, y + 1), (x + 1, y + 1))),
                         (0, -1, (0, 0, 1), ((x + 1, y), (x, y)))):
+                    outside = not (0 <= x + dx < w.cols and 0 <= y + dy < w.rows)
                     nxi, nyi = (x + dx) % w.cols, (y + dy) % w.rows
                     nf, nc = w.floor[nyi][nxi], w.ceil[nyi][nxi]
+                    if outside:
+                        nf, nc = 0.0, 0.0   # beyond the border: sealed
                     (ax, az), (bx, bz) = seg
                     if nf >= nc:
                         # full wall face of the solid neighbor
@@ -648,6 +672,7 @@ def main(argv=None):
     ap.add_argument("--frame", metavar="PNG", default=None)
     ap.add_argument("--spawn-zone",
                     choices=("tall", "crawl", "pit", "stairs", "ramp"), default=None)
+    ap.add_argument("--test-death", action="store_true", help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
 
     bw.apply_style(args.level)
@@ -710,6 +735,7 @@ def main(argv=None):
     def new_world(seed):
         seed = random.randrange(2**32) if seed is None else seed
         world = bw.World(seed, args.map_cols, args.map_rows)
+        world.bounded = True    # the mesh doesn't wrap, so neither may they
         rng = random.Random(seed ^ 0xB4C4)
         player = bw.spawn(world, rng)
         return world, player, rng
@@ -739,7 +765,9 @@ def main(argv=None):
 
     auto = not args.manual or headless
     fade = 0.0
-    caught = False
+    death_t = None          # time into the death sequence
+    blood_resid = 0.0       # blood stays on the lens after a respawn
+    death_pitch = 0.0
     shift_timer = bw.SHIFT_PERIOD
     brightness = 1.0
     flicker_left = 0.0
@@ -777,8 +805,39 @@ def main(argv=None):
                     if presence is not None:
                         presence = bw.Presence(world, player, rng)
 
+        if args.test_death and death_t is None and t_now > 1.5:
+            death_t = 0.0
+            args.test_death = False
+
+        # ------- death sequence: it caught him, and the camera saw -------
+        if death_t is not None:
+            death_t += dt
+            player.want_vx = player.want_vy = player.vx = player.vy = 0.0
+            player.fear = 1.0
+            # it is ON him, filling the frame, thrashing
+            d = max(0.55, 1.5 - death_t * 1.6)
+            presence.x = player.x + math.cos(player.angle) * d
+            presence.y = player.y + math.sin(player.angle) * d
+            presence.heading = player.angle + math.pi
+            presence.anim_phase += dt * 6.0
+            if death_t > 0.85:      # the camera goes down with him
+                k = min(1.0, (death_t - 0.85) / 0.5)
+                player.eye = bw.EYE_STAND * (1 - k) + 0.10 * k
+                death_pitch = -0.85 * k
+            if death_t > 2.55:      # tape cuts; somewhere else, later
+                np_ = bw.spawn(world, rng)
+                player.x, player.y, player.angle = np_.x, np_.y, np_.angle
+                player.z = player.vz = 0.0
+                player.eye = bw.EYE_STAND
+                player.fear = 0.5
+                presence.relocate(world, player)
+                presence.tension = 0.25     # it has had its fun. for now.
+                walker = bw.AutoWalker(rng)
+                blood_resid = 0.55
+                death_pitch = 0.0
+                death_t = None
         # ------- simulation (same beats as backrooms_walk.main) -------
-        if fade <= 0.0:
+        elif fade <= 0.0:
             if auto:
                 walker.update(world, player, dt, presence)
             else:
@@ -803,18 +862,14 @@ def main(argv=None):
                     player.want_vx = player.want_vy = 0.0
             player.apply(world, dt, bw.WALKER_MAX_DROP if auto else None)
             if presence is not None and presence.update(world, player, dt, audio):
-                caught = True
-                fade = 1.3
-                player.fear = 1.0
+                death_t = 0.0
+                if audio.ok:
+                    audio.play_scream(player.presence_bearing, 1.5, player)
+                    audio.play_death()
             if player.fell:
                 fade = 1.2
         else:
             fade -= dt
-            if fade < 0.6 and caught:
-                presence.relocate(world, player)
-                player.fear = 0.5
-                caught = False
-                walker = bw.AutoWalker(rng)
             if player.fell and fade < 0.6:
                 np_ = bw.spawn(world, rng)
                 player.x, player.y, player.angle = np_.x, np_.y, np_.angle
@@ -854,6 +909,11 @@ def main(argv=None):
         ev = exposure.update(dt, world, player, brightness)
         eye = (player.x, player.eye_z(), player.y)
         yaw = player.angle + getattr(player, "sway", 0.0) + sway_yaw
+        pitch += death_pitch
+        if death_t is not None:     # violent struggle shake
+            yaw += rng.uniform(-0.05, 0.05)
+            pitch += rng.uniform(-0.04, 0.04)
+        blood_resid = max(0.0, blood_resid - dt * 0.02)
 
         # ------- render scene -------
         for row in range(world.rows):
@@ -975,6 +1035,14 @@ def main(argv=None):
         comp_prog["fear"].value = player.fear
         comp_prog["grain_amt"].value = 0.035 + 0.05 * player.fear
         comp_prog["tear"].value = tear
+        blood_now = blood_resid
+        static_now = 0.0
+        if death_t is not None:
+            blood_now = max(blood_now, min(1.0, max(0.0, (death_t - 0.2) / 0.7)))
+            if death_t > 2.0:
+                static_now = 1.0
+        comp_prog["blood"].value = blood_now
+        comp_prog["static_amt"].value = static_now
         comp_prog["res"].value = (float(W), float(H))
         q_comp.render()
 
