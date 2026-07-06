@@ -64,6 +64,14 @@ FOV = math.radians(72)
 PROJ_K = (INTERNAL_W / 2) / math.tan(FOV / 2)   # square-pixel projection
 MAX_DEPTH = 24.0
 
+
+def set_resolution(w: int, h: int) -> None:
+    """Change the internal render resolution (--hires)."""
+    global INTERNAL_W, INTERNAL_H, HALF_H, PROJ_K
+    INTERNAL_W, INTERNAL_H = w, h
+    HALF_H = h // 2
+    PROJ_K = (w / 2) / math.tan(FOV / 2)
+
 # Wall texture: PX_PER_UNIT rows per world unit, TEX_UNITS units tall.
 TEX_W = 128
 PX_PER_UNIT = 128
@@ -232,6 +240,79 @@ def make_wall_textures(pygame_module):
         v.blit(overlay, (0, 0))
         variants.append(v.convert())
     return variants
+
+
+# ---------------------------------------------------------------------------
+# Post-processing: bloom, vignette, film grain (numpy; degrades gracefully)
+# ---------------------------------------------------------------------------
+
+class PostFX:
+    """Found-footage finish: fluorescent panels bloom, the frame carries a
+    soft vignette that tightens with fear, and film grain sits over
+    everything, heavier when he's scared."""
+
+    def __init__(self, pygame_module, w, h):
+        self.pg = pygame_module
+        self.ok = False
+        try:
+            import numpy as np
+        except ImportError:
+            return
+        self.np = np
+        self.ok = True
+        self.w, self.h = w, h
+        self.sw, self.sh = max(2, w // 4), max(2, h // 4)
+
+        # Multiplicative vignette: full brightness center, dimmer corners.
+        yy, xx = np.mgrid[0:h, 0:w]
+        r = np.hypot((xx - w / 2) / (w / 2), (yy - h / 2) / (h / 2))
+        base = np.clip(255 - (r ** 2.2) * 70, 150, 255).astype(np.uint8)
+        self.vignette = pygame_module.surfarray.make_surface(
+            np.repeat(base.T[:, :, None], 3, axis=2)).convert()
+
+        # Fear vignette: black with radial per-pixel alpha, scaled at blit.
+        fear_a = np.clip((r - 0.35) * 260, 0, 255).astype(np.uint8)
+        vf = pygame_module.Surface((w, h), pygame_module.SRCALPHA)
+        alpha = pygame_module.surfarray.pixels_alpha(vf)
+        alpha[:, :] = fear_a.T
+        del alpha
+        self.vignette_fear = vf
+
+        # Film grain: multiplicative noise sheets, two intensities.
+        rng = np.random.default_rng(7)
+        self.grain = [self._grain_sheet(rng, 10) for _ in range(8)]
+        self.grain_heavy = [self._grain_sheet(rng, 26) for _ in range(8)]
+
+    def _grain_sheet(self, rng, depth):
+        noise = 255 - rng.integers(0, depth, (self.w, self.h), dtype=self.np.uint8)
+        return self.pg.surfarray.make_surface(
+            self.np.repeat(noise[:, :, None], 3, axis=2)).convert()
+
+    def apply(self, frame, fear, tick):
+        if not self.ok:
+            return
+        np = self.np
+        pg = self.pg
+
+        # Bloom: downsample, keep only the bright end (light panels),
+        # blur by upscaling, add back.
+        small = pg.transform.smoothscale(frame, (self.sw, self.sh))
+        arr = pg.surfarray.array3d(small).astype(np.int16)
+        lum = arr.sum(axis=2)
+        mask = (lum > 640)[:, :, None]
+        bright = (arr * mask * 0.55).astype(np.uint8)
+        glow = pg.transform.smoothscale(
+            pg.surfarray.make_surface(bright), (self.w, self.h))
+        frame.blit(glow, (0, 0), special_flags=pg.BLEND_RGB_ADD)
+
+        frame.blit(self.vignette, (0, 0), special_flags=pg.BLEND_RGB_MULT)
+        if fear > 0.05:
+            self.vignette_fear.set_alpha(int(min(1.0, fear) * 150))
+            frame.blit(self.vignette_fear, (0, 0))
+
+        sheets = self.grain_heavy if fear > 0.5 else self.grain
+        frame.blit(sheets[tick % len(sheets)], (0, 0),
+                   special_flags=pg.BLEND_RGB_MULT)
 
 
 # ---------------------------------------------------------------------------
@@ -499,6 +580,7 @@ class Player:
         self.eye = EYE_STAND
         self.bob_phase = 0.0
         self.bob = 0.0
+        self.sway = 0.0
         self.fell = False
         self.fear = 0.0          # 0 calm .. 1 terror; spikes fast, decays slow
         self.exertion = 0.0      # builds while running, recovers while walking
@@ -591,11 +673,13 @@ class Player:
             rate = 1.5
         self.eye += (eye_target - self.eye) * min(1.0, rate * dt)
 
-        # Stride-synced bob; running lengthens and deepens it.
+        # Stride-synced bob; running lengthens and deepens it. A slight
+        # lateral sway at half the stride rate keeps the head organic.
         ratio = min(1.5, speed / MOVE_SPEED)
         self.bob_phase += dt * math.tau * BOB_STRIDE_HZ * (0.4 + 0.75 * min(ratio, 1.0))
         amp = BOB_AMPLITUDE * (1.0 + 0.55 * max(0.0, ratio - 1.0))
         self.bob = math.sin(self.bob_phase) * amp * min(ratio, 1.0)
+        self.sway = math.sin(self.bob_phase * 0.5) * 0.009 * min(ratio, 1.0)
 
     def crouched(self):
         return self.eye < EYE_STAND - 0.1
@@ -922,9 +1006,11 @@ class Audio:
         self.breath_calm = self._sound(self._synth_breath(False))
         self.breath_heavy = self._sound(self._synth_breath(True))
         self.heart = self._sound(self._synth_heartbeat())
-        ch = self.hum.play(loops=-1)
-        if ch:
-            ch.set_volume(0.16, 0.16)
+        self.hum_ch = self.hum.play(loops=-1)
+        self.hum_vol = 0.10
+        self.hum_target = 0.10
+        if self.hum_ch:
+            self.hum_ch.set_volume(self.hum_vol, self.hum_vol)
         self.drip_timer = rng.uniform(5.0, 14.0)
         self.breath_timer = 2.0
         self.heart_timer = 1.0
@@ -998,17 +1084,26 @@ class Audio:
         return out
 
     def _synth_lightout(self):
-        """Contactor clack, then the ballast whines down and dies."""
+        """A fluorescent bank dying: electrical sputter bursts, then a thin
+        whine ringing down into nothing. No bass — nothing thuds."""
         rng = random.Random(2)
         out = []
-        for i in range(int(SAMPLE_RATE * 1.0)):
+        n = 0.0
+        bursts = ((0.00, 0.05), (0.10, 0.04), (0.19, 0.07))
+        for i in range(int(SAMPLE_RATE * 1.1)):
             t = i / SAMPLE_RATE
             v = 0.0
-            if t < 0.04:
-                v += rng.uniform(-1, 1) * (1 - t / 0.04) * 0.9
-            f = 170 * math.exp(-t * 2.4) + 40
-            v += (math.sin(math.tau * f * t) * 0.6
-                  + math.sin(math.tau * f * 2 * t) * 0.25) * math.exp(-t * 3.0)
+            # sputter: buzzy noise gated into short bursts
+            for b0, blen in bursts:
+                if b0 <= t < b0 + blen:
+                    n = n * 0.6 + rng.uniform(-1, 1) * 0.4
+                    gate = 0.75 + 0.25 * math.sin(math.tau * 120 * t)
+                    v += n * gate * 0.8
+            # the tube's whine ringing down after the last burst
+            if t > 0.26:
+                te = t - 0.26
+                f = 2600 * math.exp(-te * 5.5) + 320
+                v += math.sin(math.tau * f * te) * math.exp(-te * 4.5) * 0.22
             out.append(v)
         return out
 
@@ -1048,11 +1143,20 @@ class Audio:
         if vol > 0.015:
             self._pan_play(self.pstep, direction, p, vol)
 
+    def set_hum_proximity(self, panel_dist, brightness):
+        """The hum belongs to the lights: loud under a live panel, faint in
+        blackouts, dipping when the lights flicker."""
+        near = max(0.0, 1.0 - panel_dist / 10.0)
+        self.hum_target = (0.03 + 0.30 * near) * brightness
+
     def update(self, dt, p: Player):
         """Breath and heartbeat follow fear and exertion; drips are just
         the garage being the garage."""
         if not self.ok:
             return
+        if self.hum_ch:
+            self.hum_vol += (self.hum_target - self.hum_vol) * min(1.0, 3.0 * dt)
+            self.hum_ch.set_volume(self.hum_vol, self.hum_vol)
         arousal = max(p.fear, p.exertion * 0.85)
 
         self.breath_timer -= dt
@@ -1156,7 +1260,8 @@ def render_frame(surface, world: World, p: Player, textures, pygame_module,
                  presence=None):
     half = HALF_H
     eye = p.eye_z()
-    dirx, diry = math.cos(p.angle), math.sin(p.angle)
+    view_angle = p.angle + getattr(p, "sway", 0.0)
+    dirx, diry = math.cos(view_angle), math.sin(view_angle)
     plane = math.tan(FOV / 2)
     planex, planey = -diry * plane, dirx * plane
     cols, rows = world.cols, world.rows
@@ -1465,7 +1570,14 @@ def main(argv=None):
                     help="render a single frame headlessly to PNG and exit")
     ap.add_argument("--export", metavar="JSON", default=None,
                     help="write the generated world as JSON and exit")
+    ap.add_argument("--no-fx", action="store_true",
+                    help="disable bloom/vignette/grain post-processing")
+    ap.add_argument("--hires", action="store_true",
+                    help="render at 640x400 instead of 480x300")
     args = ap.parse_args(argv)
+
+    if args.hires:
+        set_resolution(640, 400)
 
     apply_style(args.level)
 
@@ -1491,6 +1603,10 @@ def main(argv=None):
     textures = make_wall_textures(pygame)
     veil = pygame.Surface((INTERNAL_W, INTERNAL_H))
     veil.fill((0, 0, 0))
+    fx = None if args.no_fx else PostFX(pygame, INTERNAL_W, INTERNAL_H)
+    if fx is not None and not fx.ok:
+        print("numpy not available: post-processing disabled")
+        fx = None
 
     def new_world(seed):
         seed = random.randrange(2**32) if seed is None else seed
@@ -1509,6 +1625,8 @@ def main(argv=None):
 
     if args.frame:
         render_frame(frame, world, player, textures, pygame)
+        if fx:
+            fx.apply(frame, 0.0, 0)
         pygame.image.save(pygame.transform.scale(
             frame, (INTERNAL_W * WINDOW_SCALE, INTERNAL_H * WINDOW_SCALE)), args.frame)
         print(f"seed {seed} -> {args.frame}")
@@ -1532,6 +1650,8 @@ def main(argv=None):
     brightness = 1.0
     flicker_left = 0.0
     flicker_next = rng.uniform(4.0, 10.0)
+    hum_scan = 0.0
+    tick = 0
 
     # The guide overlay shows briefly at launch, then only after a keypress.
     hud_timer = 4.0
@@ -1623,6 +1743,21 @@ def main(argv=None):
                 shift_timer = SHIFT_PERIOD
                 world.peripheral_shift(player.x, player.y, rng)
 
+        # The hum belongs to the nearest live light panel.
+        hum_scan -= dt
+        if audio.ok and hum_scan <= 0:
+            hum_scan = 0.25
+            px, py = int(player.x), int(player.y)
+            best = 12.0
+            for yy in range(py - 10, py + 11):
+                for xx in range(px - 10, px + 11):
+                    if (world.panel[yy % world.rows][xx % world.cols]
+                            and world.light[yy % world.rows][xx % world.cols] > 0.4):
+                        d = math.hypot(xx + 0.5 - player.x, yy + 0.5 - player.y)
+                        if d < best:
+                            best = d
+            audio.set_hum_proximity(best, brightness)
+
         audio.update(dt, player)
         lights_out.update(world, player, dt, audio)
 
@@ -1645,6 +1780,9 @@ def main(argv=None):
                 flicker_next = rng.uniform(5.0, 14.0)
 
         render_frame(frame, world, player, textures, pygame, presence)
+        tick += 1
+        if fx:
+            fx.apply(frame, player.fear, tick)
         if brightness < 0.999:
             veil.set_alpha(int((1.0 - brightness) * 220))
             frame.blit(veil, (0, 0))

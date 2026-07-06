@@ -74,10 +74,22 @@ confirmed on Level 0.
 
 `--no-entity` turns it off for a peaceful screensaver.
 
+### Found-footage finish
+
+A numpy post-processing pass (skip with `--no-fx`; degrades gracefully if
+numpy is missing): the fluorescent panels **bloom**, a soft **vignette**
+tightens and darkens as fear rises, and **film grain** sits over
+everything, heavier when he's scared. A slight head sway rides on the
+stride. `--hires` renders at 640x400 instead of 480x300.
+
 ### Sound (all synthesized, stereo)
 
 - fluorescent **ballast buzz** — harmonic stack + filtered noise, 120 Hz on
-  Level 0, 60 Hz on Level 1 (`--mute` to silence)
+  Level 0, 60 Hz on Level 1 (`--mute` to silence). The hum is **proximity
+  based**: loud under a live panel, faint in blackout zones, dipping when
+  the lights flicker.
+- **dying lights** sputter and ring down — electrical crackle and a thin
+  fading whine, no Hollywood thud
 - **its footsteps**, positional and panned — approaching or receding for
   real. God save you if you hear something wandering around nearby,
   because it sure as hell has heard you.
