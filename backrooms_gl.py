@@ -121,15 +121,21 @@ uniform float layer;
 uniform vec3 cam;
 uniform vec3 fogcol;
 uniform float cell_l;
-uniform float dark;     // 1 = pure shadow quad
+uniform int mode;        // 0 sprite, 1 contact blob, 2 projected shadow
+uniform float shadow_k;
 in vec2 uv; in vec3 wpos;
 out vec4 fragment;
 void main() {
-    vec4 t = (dark > 0.5) ? vec4(0.0, 0.0, 0.0, 0.55 * (1.0 - length(uv * 2.0 - 1.0)))
-                          : texture(tex, vec3(uv, layer));
+    vec4 t = (mode == 1)
+        ? vec4(0.0, 0.0, 0.0, 0.55 * (1.0 - length(uv * 2.0 - 1.0)))
+        : texture(tex, vec3(uv, layer));
     if (t.a < 0.03) discard;
     float fd = length(wpos - cam);
     float fog = 1.0 - exp(-fd * 0.10);
+    if (mode == 2) {     // its shadow, thrown across the floor by a light
+        fragment = vec4(0.0, 0.0, 0.0, t.a * shadow_k * (1.0 - clamp(fog, 0.0, 1.0)));
+        return;
+    }
     vec3 c = t.rgb * (0.35 + 0.75 * cell_l);
     fragment = vec4(mix(c, fogcol, clamp(fog, 0.0, 1.0)), t.a * (1.0 - fog * 0.85));
 }
@@ -214,9 +220,14 @@ void main() {
                             vec2(0.74, 0.82), vec2(0.52, 0.08), vec2(0.05, 0.6));
         float m = 0.0;
         for (int k = 0; k < 6; k++) {
-            float rr = 0.09 + 0.15 * hash(bp[k] * 7.3);
-            float dd = length((uv - bp[k]) * vec2(res.x / res.y, 1.0));
-            m += smoothstep(rr, rr * 0.3, dd) * (0.7 + 0.3 * hash(uv * 40.0 + bp[k]));
+            vec2 dv = (uv - bp[k]) * vec2(res.x / res.y, 1.0);
+            float ang = atan(dv.y, dv.x);
+            // slightly irregular edges — but blobs, not paint stars
+            float lump = 0.88 + 0.16 * hash(vec2(float(k), floor(ang * 1.6)))
+                       + 0.05 * sin(ang * 3.0 + float(k) * 9.0);
+            float rr = (0.09 + 0.15 * hash(bp[k] * 7.3)) * lump;
+            m += smoothstep(rr, rr * 0.3, length(dv))
+                 * (0.7 + 0.3 * hash(uv * 40.0 + bp[k]));
         }
         m = clamp(m, 0.0, 1.0) * blood;
         col = mix(col, vec3(0.28, 0.012, 0.008) * (0.4 + 0.6 * dot(col, vec3(0.5))), m * 0.94);
@@ -772,6 +783,7 @@ def main(argv=None):
     brightness = 1.0
     flicker_left = 0.0
     flicker_next = rng.uniform(4.0, 10.0)
+    hum_scan = 0.0
     tear_timer = 0.0
     t_now = 0.0
     recorded = []
@@ -886,6 +898,14 @@ def main(argv=None):
                 if changed:
                     mesh.rebuild_cells(changed)
 
+        # hum follows the nearest live panel; echoes follow the room size
+        hum_scan -= dt
+        if audio.ok and hum_scan <= 0:
+            hum_scan = 0.25
+            audio.set_hum_proximity(
+                bw.nearest_panel_dist(world, player), brightness)
+            audio.set_space(bw.estimate_space(world, player))
+
         audio.update(dt, player)
         lights_out.update(world, player, dt, audio)
         if presence is not None and audio.ok and player.presence_dist is not None:
@@ -969,7 +989,7 @@ def main(argv=None):
             sprite_prog["cell_l"].value = cell_l
             stex.use(2)
             sprite_prog["tex"].value = 2
-            # shadow quad on the floor
+            # soft contact blob under the feet
             s = 0.45
             sh = np.array([
                 cxp - s, pz + 0.012, czp - s, 0, 0,
@@ -978,20 +998,61 @@ def main(argv=None):
                 cxp - s, pz + 0.012, czp + s, 0, 1,
                 cxp + s, pz + 0.012, czp - s, 1, 0,
                 cxp + s, pz + 0.012, czp + s, 1, 1], dtype=np.float32)
-            sprite_prog["dark"].value = 1.0
+            sprite_prog["mode"].value = 1
+            sprite_prog["shadow_k"].value = 0.0
             sprite_prog["layer"].value = 0.0
             sprite_vbo.write(sh.tobytes())
             sprite_vao.render()
-            # billboard
+
             hw = wdt / 2
             bl = (cxp - rightx * hw, pz, czp - rightz * hw)
             br = (cxp + rightx * hw, pz, czp + rightz * hw)
             tl = (bl[0], pz + hgt, bl[2])
             tr = (br[0], pz + hgt, br[2])
+
+            # Its shadow, cast across the floor by the nearest live panel —
+            # project the billboard corners from the light onto the floor
+            # plane. Through a doorway, the shadow arrives first.
+            best = None
+            sxi, syi = int(presence.x), int(presence.y)
+            for yy in range(syi - 9, syi + 10):
+                for xx in range(sxi - 9, sxi + 10):
+                    x_, y_ = xx % world.cols, yy % world.rows
+                    if world.panel[y_][x_] and world.light[y_][x_] > 0.35:
+                        d2 = (xx + 0.5 - presence.x) ** 2 + (yy + 0.5 - presence.y) ** 2
+                        if best is None or d2 < best[0]:
+                            best = (d2, xx + 0.5, world.ceil[y_][x_] - 0.06, yy + 0.5)
+            if best is not None and best[2] > pz + hgt + 0.05:
+                _, lx, ly, lz = best
+                L = np.array([lx, ly, lz])
+                projected = []
+                for P in (bl, br, tl, tr):
+                    Pv = np.array(P)
+                    denom = ly - Pv[1]
+                    if denom < 0.05:
+                        projected = None
+                        break
+                    t_ = (ly - (pz + 0.008)) / denom
+                    projected.append(L + (Pv - L) * t_)
+                if projected is not None:
+                    ldist = math.sqrt(best[0])
+                    k = max(0.15, min(0.6, 1.5 / (1.0 + ldist)))
+                    pbl, pbr, ptl, ptr = projected
+                    shq = np.array([
+                        *pbl, 0, 0, *pbr, 1, 0, *ptl, 0, 1,
+                        *ptl, 0, 1, *pbr, 1, 0, *ptr, 1, 1], dtype=np.float32)
+                    sprite_prog["mode"].value = 2
+                    sprite_prog["shadow_k"].value = k
+                    sprite_prog["layer"].value = float(layer)
+                    sprite_vbo.write(shq.tobytes())
+                    sprite_vao.render()
+
+            # the billboard itself
             bb = np.array([
                 *bl, 0, 0, *br, 1, 0, *tl, 0, 1,
                 *tl, 0, 1, *br, 1, 0, *tr, 1, 1], dtype=np.float32)
-            sprite_prog["dark"].value = 0.0
+            sprite_prog["mode"].value = 0
+            sprite_prog["shadow_k"].value = 0.0
             sprite_prog["layer"].value = float(layer)
             sprite_vbo.write(bb.tobytes())
             sprite_vao.render()

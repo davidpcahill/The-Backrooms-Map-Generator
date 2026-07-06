@@ -443,9 +443,12 @@ class World:
 
     def _add_tall_halls(self, rng):
         # Canon: "massive chambers with pillars in lattice or grid patterns"
+        # Hole-fill twice: speckle holes first, then absorb skinny fringe
+        # strips whose normal-height ceilings would float like planks.
         for _ in range(rng.randint(*STYLE["tall"])):
             h = rng.uniform(*STYLE["tall_h"])
             blob = self._fill_holes(self._blob(rng, rng.randint(150, 600)))
+            blob = self._fill_holes(blob, min_n=4, passes=2)
             for x, y in blob:
                 if self.ceil[y][x] > 0:
                     self.ceil[y][x] = h
@@ -1370,9 +1373,16 @@ class Audio:
         self.scrape = self._sound(self._synth_scrape())
         self.swell = self._sound(self._synth_swell())
         self.growl = self._sound(self._synth_growl())
-        self.scream = self._sound(self._synth_scream())
+        raw_scream = self._synth_scream()
+        self.scream = self._sound(raw_scream)
         self.pain = self._sound(self._synth_pain())
         self.impact = self._sound(self._synth_impact())
+        # Reverberant variants for big spaces: the same sounds with a
+        # multi-tap tail, chosen by how much room there is around him.
+        self.pstep_rev = self._sound(self._with_reverb(self._synth_presence_step()))
+        self.knock_rev = self._sound(self._with_reverb(self._synth_knock()))
+        self.scream_rev = self._sound(self._with_reverb(raw_scream))
+        self.space = 0.3        # 0 = tight corridor, 1 = cavernous hall
         self.growl_ch = self.growl.play(loops=-1)
         if self.growl_ch:
             self.growl_ch.set_volume(0.0, 0.0)
@@ -1398,6 +1408,17 @@ class Audio:
             buf.append(s)
             buf.append(s)
         return self.pg.mixer.Sound(buffer=buf.tobytes())
+
+    @staticmethod
+    def _with_reverb(mono, taps=((0.09, 0.50), (0.19, 0.34),
+                                 (0.33, 0.21), (0.52, 0.12), (0.78, 0.06))):
+        """Cheap room reverb: delayed, decaying copies summed in."""
+        out = list(mono) + [0.0] * int(SAMPLE_RATE * 1.0)
+        for delay, gain in taps:
+            off = int(delay * SAMPLE_RATE)
+            for i, v in enumerate(mono):
+                out[i + off] += v * gain
+        return out
 
     def _synth_hum(self, freq):
         """Fluorescent ballast buzz: harmonic stack + low-passed noise with
@@ -1651,14 +1672,21 @@ class Audio:
         if self.ok:
             self._pan_play(self.zap, direction, p, 0.6)
 
+    def set_space(self, space):
+        """0 = tight corridor, 1 = cavernous hall. Chooses dry vs
+        reverberant variants of the world's sounds."""
+        self.space = max(0.0, min(1.0, space))
+
     def presence_step(self, direction, dist, p):
         """A real footstep from a real position: volume falls off with
-        distance (gently — it should carry), panned to where it is."""
+        distance (gently — it should carry), panned to where it is.
+        In big rooms, it echoes."""
         if not self.ok:
             return
         vol = min(0.55, 2.6 / max(dist, 1.5) ** 0.85)
         if vol > 0.02:
-            self._pan_play(self.pstep, direction, p, vol)
+            snd = self.pstep_rev if self.space > 0.45 else self.pstep
+            self._pan_play(snd, direction, p, vol)
 
     def set_presence(self, dist, bearing):
         self.presence_dist = dist
@@ -1684,7 +1712,8 @@ class Audio:
 
     def play_scream(self, direction, dist, p):
         if self.ok:
-            self._pan_play(self.scream, direction, p,
+            snd = self.scream_rev if self.space > 0.45 else self.scream
+            self._pan_play(snd, direction, p,
                            min(0.75, 3.0 / max(dist, 2.0) ** 0.5))
 
     def play_death(self):
@@ -1746,7 +1775,7 @@ class Audio:
             d = self.presence_dist
             self.danger_timer -= dt * (1.6 if d < 8.0 else 1.0)
             if self.danger_timer <= 0:
-                pool = [self.knock]
+                pool = [self.knock_rev if self.space > 0.45 else self.knock]
                 if d < 14.0:
                     pool += [self.scrape, self.scrape]
                 if d < 18.0:
@@ -2202,6 +2231,35 @@ def export_map(world: World, level: int, path: str) -> None:
 # App
 # ---------------------------------------------------------------------------
 
+def nearest_panel_dist(world: World, p: Player, radius=10) -> float:
+    """Distance to the closest live light panel (for the hum)."""
+    px, py = int(p.x), int(p.y)
+    best = float(radius + 2)
+    for yy in range(py - radius, py + radius + 1):
+        for xx in range(px - radius, px + radius + 1):
+            if (world.panel[yy % world.rows][xx % world.cols]
+                    and world.light[yy % world.rows][xx % world.cols] > 0.4):
+                d = math.hypot(xx + 0.5 - p.x, yy + 0.5 - p.y)
+                if d < best:
+                    best = d
+    return best
+
+
+def estimate_space(world: World, p: Player) -> float:
+    """How big does this room feel? 0 = tight corridor, 1 = cavern.
+    Openness around him plus ceiling height."""
+    xi, yi = int(p.x) % world.cols, int(p.y) % world.rows
+    open_n = 0
+    for dy in range(-3, 4):
+        for dx in range(-3, 4):
+            x, y = (xi + dx) % world.cols, (yi + dy) % world.rows
+            if world.floor[y][x] < world.ceil[y][x]:
+                open_n += 1
+    openness = open_n / 49.0
+    return max(0.0, min(1.0, 0.75 * openness - 0.15
+                        + 0.45 * (world.ceil[yi][xi] - 1.0)))
+
+
 def resource_path(rel: str) -> str:
     """Find bundled assets both from source and from a PyInstaller app."""
     base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
@@ -2418,16 +2476,9 @@ def main(argv=None):
         hum_scan -= dt
         if audio.ok and hum_scan <= 0:
             hum_scan = 0.25
-            px, py = int(player.x), int(player.y)
-            best = 12.0
-            for yy in range(py - 10, py + 11):
-                for xx in range(px - 10, px + 11):
-                    if (world.panel[yy % world.rows][xx % world.cols]
-                            and world.light[yy % world.rows][xx % world.cols] > 0.4):
-                        d = math.hypot(xx + 0.5 - player.x, yy + 0.5 - player.y)
-                        if d < best:
-                            best = d
-            audio.set_hum_proximity(best, brightness)
+            audio.set_hum_proximity(
+                nearest_panel_dist(world, player), brightness)
+            audio.set_space(estimate_space(world, player))
 
         audio.update(dt, player)
         lights_out.update(world, player, dt, audio)
