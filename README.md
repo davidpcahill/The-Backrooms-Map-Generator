@@ -28,16 +28,34 @@ python backrooms_walk.py --manual        # you drive (WASD + arrows)
 python backrooms_walk.py --record demo.gif --seconds 8   # headless GIF (needs pillow)
 ```
 
-Details pulled from Level 0 canon:
+Every cell has its own floor and ceiling height (a Build-engine-style
+stepped sector renderer), so the level does what the canon says it does.
+Scale: 1 unit = one normal room height (~9 ft).
 
-- worn mono-yellow wallpaper with a darker band low on the wall, brownish
-  Berber carpet, low drop ceiling
-- fluorescent hum synthesized at 120 Hz + harmonics (`--mute` to silence),
-  with light flicker
+| | |
+| --- | --- |
+| ![grand hall](examples/grand_hall.png) | **Grand halls** — pillared chambers with ceilings up to ~30 ft. The deeper canon: rooms get "so massive that it's impossible to see the edge, or the lights get too high to reach the ground" — so floors dim under very tall ceilings. |
+| ![stairs](examples/stairs.png) | **Sunken wings & stairs** — the floor terraces down ring by ring into lower areas; steps auto-climb like stair risers. |
+| ![pitfalls](examples/pitfalls.png) | **The Pitfalls** — lattice-pattern fields of carpeted shafts ~8 m deep. Fall in and you noclip deeper: fade out, respawn somewhere else in the level. |
+
+Plus, from the same canon research:
+
+- **crawlspaces** ~4 ft tall — you auto-crouch and slow down
+  (like the space above the drop ceiling, but you're in it)
+- **drop-ceiling fluorescent panels**, inconsistently placed, with flicker;
+  whole **blackout zones** have no lights at all
+- worn pale-yellow wallpaper with a dark chair-rail trim (palette matched to
+  the original Level 0 photo), Berber carpet, synthesized 120 Hz hum-buzz
+  (`--mute`)
 - **Peripheral Shift** — the map quietly re-carves itself in areas you are
   not looking at, so retracing your steps never quite works. Watch it happen
   on the minimap (`M`). Disable with `--no-shift`.
+- dead ends everywhere, and the world wraps at the edges — it goes on
+  seemingly forever
 - no entities. Level 0 is empty. That's the point.
+
+Useful flags: `--spawn-zone tall|crawl|pit|stairs` spawns you next to a
+specific zone; `--frame out.png` renders a single frame headlessly.
 
 | Key | Action |
 | --- | --- |
@@ -127,8 +145,8 @@ spacing) live in the `Config` dataclass at the top of
 ## Ideas / contributions welcome
 
 - Textured walls (real wallpaper pattern instead of flat shading)
-- Ceiling light panels via floor/ceiling casting
 - Entity-free scares: distant footstep audio, lights going out in banks
+- Ramps and raked floors (Kane Pixels-style slanted crawl gaps)
 - Export maps as JSON/Tiled for use in other engines
 - Other levels (Level 1 parking garage, poolrooms, etc.)
 
