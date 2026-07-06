@@ -958,6 +958,30 @@ class AutoWalker:
         p.want_vy = math.sin(p.angle) * speed
 
 
+def load_bacteria_frames(pygame_module):
+    """Directional sprites baked from the rigged Howler/bacteria model
+    (see CREDITS.md): 8 walk phases x 8 view angles, cropped to a common
+    bounding box so the feet anchor to the floor. Returns
+    {'dirs': frames[angle][phase], 'aspect': w/h} or None."""
+    try:
+        sheet = pygame_module.image.load(
+            resource_path("assets/bacteria_sheet.png")).convert_alpha()
+    except Exception:
+        return None
+    fw, fh = sheet.get_width() // 8, sheet.get_height() // 8
+    # Per-frame crop: each frame's lowest opaque pixel is its ground
+    # contact, so the feet stay planted even as limbs swing.
+    frames = []
+    for a in range(8):
+        row = []
+        for p in range(8):
+            f = sheet.subsurface((p * fw, a * fh, fw, fh))
+            r = f.get_bounding_rect(min_alpha=8)
+            row.append(f.subsurface(r).copy())
+        frames.append(row)
+    return {"dirs": frames}
+
+
 def make_figure_frames(pygame_module, n=10):
     """A lanky, hunched walk cycle, rendered as pure silhouette frames.
     Long arms, thin frame, small head — Kane-adjacent without lifting
@@ -1025,6 +1049,7 @@ class Presence:
         self.blind_t = 0.0       # hunt time without line of sight
         self.scream_cd = 0.0
         self.anim_phase = 0.0
+        self.heading = 0.0
         self.dimmed = {}         # cells it darkened: (x,y) -> (light, panel)
         self.x, self.y = self._pick_spot(world, p, ahead)
 
@@ -1202,6 +1227,7 @@ class Presence:
                 step = min(speed * dt, d)
                 self.x = (self.x + dx / d * step) % world.cols
                 self.y = (self.y + dy / d * step) % world.rows
+                self.heading = math.atan2(dy, dx)
             self.anim_phase += speed * dt * 1.35
             self.stride -= dt
             if self.stride <= 0:
@@ -1849,12 +1875,45 @@ def render_frame(surface, world: World, p: Player, textures, pygame_module,
                 sx = int(INTERNAL_W / 2 * (1.0 + tx / ty))
                 pz = world.floor_at(presence.x, presence.y)
                 feet = half + int((eye - pz) * PROJ_K / ty)
-                top = half + int((eye - (pz + 0.92)) * PROJ_K / ty)
+                top = half + int((eye - (pz + 1.15)) * PROJ_K / ty)
                 h_px = max(2, feet - top)
-                w_px = max(1, h_px // 2)
-                x0 = sx - w_px // 2
                 phase = getattr(presence, "anim_phase", 0.0)
-                if figure_frames:
+
+                # Contact shadow: without it, anything in a lit room reads
+                # as floating.
+                sh_w = max(2, int(0.30 * PROJ_K / ty))
+                sh_h = max(1, sh_w // 4)
+                shadow = pygame_module.Surface((sh_w, sh_h),
+                                               pygame_module.SRCALPHA)
+                pygame_module.draw.ellipse(shadow, (0, 0, 0, 88),
+                                           (0, 0, sh_w, sh_h))
+                sx0 = sx - sh_w // 2
+                for cx in range(max(0, sx0), min(INTERNAL_W, sx0 + sh_w)):
+                    if depth[cx] > ty:
+                        blit(shadow, (cx, feet - sh_h // 2),
+                             (cx - sx0, 0, 1, sh_h))
+
+                if isinstance(figure_frames, dict):
+                    # Baked directional sprites: pick the view row from the
+                    # angle between its heading and the line to the player.
+                    dirs = figure_frames["dirs"]
+                    to_player = math.atan2(-rely, -relx)
+                    heading = getattr(presence, "heading", 0.0)
+                    view = (to_player - heading) % math.tau
+                    row = int((view + math.pi / 8) / (math.pi / 4)) % 8
+                    col = int(phase * 8) % 8
+                    src = dirs[row][col]
+                    w_px = max(1, int(h_px * src.get_width() / src.get_height()))
+                    x0 = sx - w_px // 2
+                    sprite = pygame_module.transform.scale(src, (w_px, h_px))
+                    fade = 1.0 - (ty / MAX_DEPTH) ** 1.15 * 0.96
+                    sprite.set_alpha(int(255 * max(0.0, fade)))
+                    for cx in range(max(0, x0), min(INTERNAL_W, x0 + w_px)):
+                        if depth[cx] > ty:
+                            blit(sprite, (cx, top), (cx - x0, 0, 1, h_px))
+                elif figure_frames:
+                    w_px = max(1, h_px // 2)
+                    x0 = sx - w_px // 2
                     idx = int(phase * len(figure_frames)) % len(figure_frames)
                     sprite = pygame_module.transform.scale(
                         figure_frames[idx], (w_px, h_px))
@@ -2058,7 +2117,7 @@ def main(argv=None):
         fx = None
     if fx is not None and args.no_vhs:
         fx.vhs = False
-    figure_frames = make_figure_frames(pygame)
+    figure_frames = load_bacteria_frames(pygame) or make_figure_frames(pygame)
 
     def new_world(seed):
         seed = random.randrange(2**32) if seed is None else seed

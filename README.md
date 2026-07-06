@@ -60,6 +60,12 @@ Movement is driven by effort and fear, not a constant speed:
 
 ![the figure](examples/the_figure.png)
 
+It's the Howler now: directional sprites baked in Blender from a rigged
+community model of Kane Pixels' bacteria (8 walk phases × 8 view angles,
+posed procedurally — see [CREDITS.md](CREDITS.md)), with a contact
+shadow, depth occlusion, and fog fade. If the sprite sheet is missing it
+falls back to a procedural silhouette.
+
 Something is always somewhere in the level, and it is always *walking*
 toward you. It never runs. You hear its footsteps before you see it —
 real positional audio, louder and panned as it closes. The lights get
