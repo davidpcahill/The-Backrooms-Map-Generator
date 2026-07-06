@@ -354,6 +354,7 @@ class World:
         self._add_raked_floors(rng)
         self._add_pitfalls(rng)
         self._add_blackouts(rng)
+        self._add_doorways(rng)
         self._place_panels(rng)
 
     # -- zone helpers -------------------------------------------------------
@@ -473,13 +474,46 @@ class World:
             for x, y in self._blob(rng, rng.randint(100, 300)):
                 self.light[y][x] = 0.3
 
+    def _add_doorways(self, rng):
+        """Punch door-height lintels into wall gaps so the segmented rooms
+        read as rooms with doorways, not just missing wall."""
+        R, C = self.rows, self.cols
+        DOOR_H = 0.82
+
+        def open_norm(x, y):
+            x %= C
+            y %= R
+            return (self.floor[y][x] == 0.0 and 0.9 < self.ceil[y][x] <= 1.3
+                    and not self.gx[y][x] and not self.gy[y][x])
+
+        lintels = []
+        for y in range(1, R - 1):
+            for x in range(1, C - 1):
+                if not open_norm(x, y):
+                    continue
+                L, Rt = self.solid(x - 1, y), self.solid(x + 1, y)
+                U, D = self.solid(x, y - 1), self.solid(x, y + 1)
+                # single-width gap in a wall line
+                if (L and Rt and not U and not D) or (U and D and not L and not Rt):
+                    if rng.random() < 0.6:
+                        lintels.append((x, y))
+                # double-width gap
+                elif (L and not Rt and open_norm(x + 1, y) and self.solid(x + 2, y)
+                        and not U and not D and rng.random() < 0.45):
+                    lintels += [(x, y), (x + 1, y)]
+                elif (U and not D and open_norm(x, y + 1) and self.solid(x, y + 2)
+                        and not L and not Rt and rng.random() < 0.45):
+                    lintels += [(x, y), (x, y + 1)]
+        for x, y in lintels:
+            self.ceil[y][x] = DOOR_H
+
     def _place_panels(self, rng):
         self.panel = [[False] * self.cols for _ in range(self.rows)]
         pattern = STYLE["panel"]
         prob = STYLE["panel_prob"]
         for y in range(self.rows):
             for x in range(self.cols):
-                if (self.ceil[y][x] > 0.5 and pattern(x, y)
+                if (self.ceil[y][x] > 0.9 and pattern(x, y)
                         and self.light[y][x] > 0.5 and rng.random() < prob):
                     self.panel[y][x] = True
 
@@ -586,6 +620,10 @@ class Player:
         self.exertion = 0.0      # builds while running, recovers while walking
         self.crouch_hint = False  # controller sees a low ceiling coming up
         self.running = False
+        self.presence_bearing = None   # perception of the thing, if any
+        self.presence_dist = None
+        self.presence_seen = False
+        self.presence_heard = False
 
     def eye_z(self):
         return self.z + self.eye + self.bob
@@ -702,6 +740,8 @@ class AutoWalker:
         self.pause = 0.0
         self.pause_turn = 0.0
         self.panic = False
+        self.look = 0.0          # >0: turning to look toward the thing
+        self.look_cd = 0.0
 
     def plan(self, world: World, p: Player, flee_from=None):
         start = (int(p.x) % world.cols, int(p.y) % world.rows)
@@ -769,6 +809,34 @@ class AutoWalker:
             self.pause -= dt
             p.want_vx = p.want_vy = 0.0
             p.angle += self.pause_turn * dt
+            return
+
+        # Looking is how he knows. Hearing something behind him makes him
+        # stop and turn to check; mid-flight he throws glances over his
+        # shoulder every few seconds without breaking stride.
+        self.look_cd -= dt
+        if self.look <= 0 and p.presence_bearing is not None and self.look_cd <= 0:
+            if self.panic:
+                self.look = 0.45
+                self.look_cd = self.rng.uniform(3.5, 7.0)
+            elif p.presence_heard and not p.presence_seen:
+                self.look = 0.9
+                self.look_cd = self.rng.uniform(6.0, 12.0)
+        if self.look > 0 and p.presence_bearing is not None:
+            self.look -= dt
+            diff = (p.presence_bearing - p.angle + math.pi) % math.tau - math.pi
+            turn = TURN_SPEED * 1.8 * dt
+            p.angle += max(-turn, min(turn, diff))
+            if self.panic and self.path and self.idx < len(self.path):
+                # keep running the route while the head is turned
+                cx, cy = self.path[self.idx]
+                dx, dy = world.wrap_delta(p.x, p.y, cx + 0.5, cy + 0.5)
+                d = math.hypot(dx, dy) or 1.0
+                speed = MOVE_SPEED * 1.35
+                p.want_vx = dx / d * speed
+                p.want_vy = dy / d * speed
+            else:
+                p.want_vx = p.want_vy = 0.0      # stop. listen. look.
             return
 
         flee = None
@@ -928,9 +996,12 @@ class Presence:
         if self.replan <= 0:
             self._plan(world, p)
         if not self.path:
+            # Sealed off by the Shift: it does not teleport. It waits.
+            # Only if it stays walled off for a long time does it turn up
+            # somewhere else — it always finds another way, eventually.
             self.lost += dt
-            if self.lost > 12.0:      # sealed off by the Shift: it finds
-                self.relocate(world, p)   # another way. It always does.
+            if self.lost > 60.0:
+                self.relocate(world, p)
         else:
             self.lost = 0.0
             while self.idx < len(self.path) - 1:
@@ -955,13 +1026,24 @@ class Presence:
                     audio.presence_step(math.atan2(pdy, pdx),
                                         math.hypot(pdx, pdy), p)
 
-        # Fear: proximity is bad, seeing it is worse. Spikes fast,
-        # lets go slowly.
+        # Perception, not radar: he only fears what he can see or hear.
+        # Seeing it requires line of sight AND facing it. Hearing it
+        # (footsteps close by) unnerves him — enough to make him turn
+        # around and look. Confirmation is what breaks him into a run.
         pdx, pdy = world.wrap_delta(p.x, p.y, self.x, self.y)
         dist = math.hypot(pdx, pdy)
-        visible = dist < 20.0 and line_of_sight(world, p.x, p.y, self.x, self.y)
+        bearing = math.atan2(pdy, pdx)
+        rel = (bearing - p.angle + math.pi) % math.tau - math.pi
+        seen = (dist < 20.0 and abs(rel) < 1.0
+                and line_of_sight(world, p.x, p.y, self.x, self.y))
+        heard = dist < 13.0
         threat = max(0.0, 1.0 - dist / 16.0)
-        target = threat if visible else threat * 0.35
+        if seen:
+            target = threat
+        elif heard:
+            target = threat * (0.85 if dist < 5.0 else 0.5)
+        else:
+            target = 0.0
         xi, yi = int(p.x) % world.cols, int(p.y) % world.rows
         if world.light[yi][xi] < 0.4:
             target = max(target, 0.15)     # the dark is never comfortable
@@ -969,6 +1051,11 @@ class Presence:
             p.fear += (target - p.fear) * min(1.0, 2.2 * dt)
         else:
             p.fear += (target - p.fear) * min(1.0, 0.12 * dt)
+
+        p.presence_bearing = bearing
+        p.presence_dist = dist
+        p.presence_seen = seen
+        p.presence_heard = heard
 
         return dist < 1.25
 
@@ -1006,6 +1093,9 @@ class Audio:
         self.breath_calm = self._sound(self._synth_breath(False))
         self.breath_heavy = self._sound(self._synth_breath(True))
         self.heart = self._sound(self._synth_heartbeat())
+        self.knock = self._sound(self._synth_knock())
+        self.scrape = self._sound(self._synth_scrape())
+        self.swell = self._sound(self._synth_swell())
         self.hum_ch = self.hum.play(loops=-1)
         self.hum_vol = 0.10
         self.hum_target = 0.10
@@ -1014,6 +1104,9 @@ class Audio:
         self.drip_timer = rng.uniform(5.0, 14.0)
         self.breath_timer = 2.0
         self.heart_timer = 1.0
+        self.danger_timer = rng.uniform(10.0, 22.0)
+        self.presence_dist = None
+        self.presence_bearing = 0.0
 
     # -- synthesis ----------------------------------------------------------
 
@@ -1107,6 +1200,54 @@ class Audio:
             out.append(v)
         return out
 
+    def _synth_knock(self):
+        """Three raps on something hollow, a few rooms away."""
+        out = []
+        hits = ((0.0, 1.0), (0.27, 0.75), (0.50, 0.9))
+        for i in range(int(SAMPLE_RATE * 0.95)):
+            t = i / SAMPLE_RATE
+            v = 0.0
+            for t0, a in hits:
+                if t >= t0:
+                    te = t - t0
+                    v += a * (math.sin(math.tau * 185 * te) * 0.7
+                              + math.sin(math.tau * 310 * te) * 0.3) * math.exp(-te * 38)
+            out.append(v * 0.85)
+        return out
+
+    def _synth_scrape(self):
+        """Something heavy dragged over carpet: resonated noise, sweeping."""
+        rng = random.Random(5)
+        out = []
+        y1 = y2 = 0.0
+        r = 0.985
+        dur = 1.3
+        for i in range(int(SAMPLE_RATE * dur)):
+            t = i / SAMPLE_RATE
+            f = 350 + 600 * (t / dur)
+            w = math.tau * f / SAMPLE_RATE
+            env = math.sin(math.pi * t / dur) ** 1.5
+            x = rng.uniform(-1, 1) * env * 0.08
+            y = 2 * r * math.cos(w) * y1 - r * r * y2 + x
+            y2, y1 = y1, y
+            out.append(max(-1.0, min(1.0, y)))
+        return out
+
+    def _synth_swell(self):
+        """A low room-tone swell, like the building leaning in."""
+        rng = random.Random(6)
+        out = []
+        n = 0.0
+        dur = 2.8
+        for i in range(int(SAMPLE_RATE * dur)):
+            t = i / SAMPLE_RATE
+            env = math.sin(math.pi * t / dur) ** 2
+            n = n * 0.94 + rng.uniform(-1, 1) * 0.06
+            v = (math.sin(math.tau * 54 * t) + math.sin(math.tau * 67 * t) * 0.7
+                 + math.sin(math.tau * 41 * t) * 0.5) * 0.22 + n * 0.5
+            out.append(v * env)
+        return out
+
     def _synth_drip(self):
         """Water drip with a faint echo, for the parking garage."""
         out = []
@@ -1136,12 +1277,16 @@ class Audio:
 
     def presence_step(self, direction, dist, p):
         """A real footstep from a real position: volume falls off with
-        distance, panned to where it actually is."""
+        distance (gently — it should carry), panned to where it is."""
         if not self.ok:
             return
-        vol = min(0.5, 1.6 / max(dist, 1.0))
-        if vol > 0.015:
+        vol = min(0.55, 2.6 / max(dist, 1.5) ** 0.85)
+        if vol > 0.02:
             self._pan_play(self.pstep, direction, p, vol)
+
+    def set_presence(self, dist, bearing):
+        self.presence_dist = dist
+        self.presence_bearing = bearing
 
     def set_hum_proximity(self, panel_dist, brightness):
         """The hum belongs to the lights: loud under a live panel, faint in
@@ -1184,19 +1329,44 @@ class Audio:
                 self._pan_play(self.drip, self.rng.uniform(0, math.tau), p,
                                self.rng.uniform(0.10, 0.28))
 
+        # Distant danger: knocks, drags, the building leaning in. The
+        # closer it is, the more frantic the soundscape gets — and it all
+        # comes from its actual direction.
+        if self.presence_dist is not None and self.presence_dist < 26.0:
+            d = self.presence_dist
+            self.danger_timer -= dt * (1.6 if d < 8.0 else 1.0)
+            if self.danger_timer <= 0:
+                pool = [self.knock]
+                if d < 14.0:
+                    pool += [self.scrape, self.scrape]
+                if d < 18.0:
+                    pool.append(self.swell)
+                vol = min(0.5, 2.2 / max(d, 2.0) ** 0.8)
+                jitter = self.rng.uniform(-0.4, 0.4)
+                self._pan_play(self.rng.choice(pool),
+                               self.presence_bearing + jitter, p, vol)
+                self.danger_timer = (max(4.0, min(26.0, 4.0 + d * 0.7))
+                                     * self.rng.uniform(0.6, 1.4))
+
 
 class LightsOut:
-    """Now and then a bank of lights ahead strobes, clunks, and dies.
-    The area stays dark for a while, then slowly hums back to life."""
+    """A bank of lights starts to misbehave: a long, irregular sputter —
+    stuttering dips with uneasy pauses — while you wonder whether it will
+    die at all. Usually it steadies itself. Rarely, it doesn't."""
+
+    DIE_CHANCE = 0.35
 
     def __init__(self, rng, record=False):
         self.rng = rng
-        self.timer = 2.0 if record else rng.uniform(12.0, 30.0)
-        self.state = None       # None | 'flicker' | 'dead' | 'recover'
+        self.record = record
+        self.timer = 3.0 if record else rng.uniform(40.0, 110.0)
+        self.state = None       # None | 'tease' | 'dying' | 'dead' | 'recover'
         self.t = 0.0
         self.saved = {}         # (x, y) -> (light, panel)
+        self.sputter = 0.0      # time until the current dip/hold flips
+        self.dipped = False
 
-    def _trigger(self, world: World, p: Player, audio: Audio | None):
+    def _trigger(self, world: World, p: Player):
         cx = p.x + math.cos(p.angle) * self.rng.uniform(5, 11)
         cy = p.y + math.sin(p.angle) * self.rng.uniform(5, 11)
         radius = self.rng.uniform(3.0, 6.0)
@@ -1210,31 +1380,63 @@ class LightsOut:
                         and world.light[yi][xi] > 0.45):
                     cells[(xi, yi)] = (world.light[yi][xi], world.panel[yi][xi])
         if len(cells) < 6:
-            self.timer = 3.0
+            self.timer = 5.0
             return
         self.saved = cells
-        self.state = "flicker"
-        self.t = 0.55
-        if audio:
-            audio.play_lightout(math.atan2(cy - p.y, cx - p.x), p)
+        self.state = "tease"
+        self.t = self.rng.uniform(1.8, 4.5)
+        self.sputter = 0.0
+        self.bearing = math.atan2(cy - p.y, cx - p.x)
+
+    def _set(self, world, level):
+        for (x, y), (orig, _) in self.saved.items():
+            world.light[y][x] = orig * level if level > 0.2 else level
+
+    def _restore(self, world):
+        for (x, y), (orig, panel) in self.saved.items():
+            world.light[y][x] = orig
+            world.panel[y][x] = panel
 
     def update(self, world: World, p: Player, dt, audio: Audio | None):
         if self.state is None:
             self.timer -= dt
             if self.timer <= 0:
-                self._trigger(world, p, audio)
+                self._trigger(world, p)
             return
 
         self.t -= dt
-        if self.state == "flicker":
-            for (x, y), (orig, _) in self.saved.items():
-                world.light[y][x] = orig if self.rng.random() < 0.5 else 0.08
+        if self.state == "tease":
+            # Irregular stutter: brief dips separated by uneasy holds of
+            # normal light. Will it die? Usually not.
+            self.sputter -= dt
+            if self.sputter <= 0:
+                self.dipped = not self.dipped
+                if self.dipped:
+                    self.sputter = self.rng.uniform(0.04, 0.18)
+                    self._set(world, self.rng.uniform(0.05, 0.4))
+                else:
+                    self.sputter = self.rng.uniform(0.15, 0.9)
+                    self._set(world, 1.0)
+            if self.t <= 0:
+                if self.record or self.rng.random() < self.DIE_CHANCE:
+                    self.state = "dying"
+                    self.t = 0.5
+                    if audio:
+                        audio.play_lightout(self.bearing, p)
+                else:
+                    # It steadies. This time.
+                    self._restore(world)
+                    self.saved = {}
+                    self.state = None
+                    self.timer = self.rng.uniform(30.0, 90.0)
+        elif self.state == "dying":
+            self._set(world, self.rng.uniform(0.05, 0.25))
             if self.t <= 0:
                 for (x, y) in self.saved:
                     world.light[y][x] = 0.12
                     world.panel[y][x] = False
                 self.state = "dead"
-                self.t = self.rng.uniform(14.0, 28.0)
+                self.t = self.rng.uniform(20.0, 40.0)
         elif self.state == "dead":
             if self.t <= 0:
                 self.state = "recover"
@@ -1244,12 +1446,11 @@ class LightsOut:
             for (x, y), (orig, _) in self.saved.items():
                 world.light[y][x] = 0.12 + (orig - 0.12) * k
             if self.t <= 0:
-                for (x, y), (orig, panel) in self.saved.items():
-                    world.light[y][x] = orig
-                    world.panel[y][x] = panel
+                self._restore(world)
                 self.saved = {}
                 self.state = None
-                self.timer = self.rng.uniform(25.0, 55.0)
+                self.record = False
+                self.timer = self.rng.uniform(50.0, 120.0)
 
 
 # ---------------------------------------------------------------------------
@@ -1546,6 +1747,12 @@ def export_map(world: World, level: int, path: str) -> None:
 # App
 # ---------------------------------------------------------------------------
 
+def resource_path(rel: str) -> str:
+    """Find bundled assets both from source and from a PyInstaller app."""
+    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, rel)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(
         description="First-person walkthrough of a generated Backrooms map.",
@@ -1592,6 +1799,10 @@ def main(argv=None):
 
     import pygame
     pygame.init()
+    try:
+        pygame.display.set_icon(pygame.image.load(resource_path("assets/icon.png")))
+    except Exception:
+        pass
     flags = 0
     if not (args.windowed or args.record or args.frame):
         flags = pygame.FULLSCREEN | pygame.SCALED
@@ -1761,12 +1972,15 @@ def main(argv=None):
         audio.update(dt, player)
         lights_out.update(world, player, dt, audio)
 
-        # When it gets close, the lights get nervous too.
+        # When it gets close, the lights get nervous too — and the
+        # soundscape knows where it is.
         if presence is not None:
             pd = math.hypot(*world.wrap_delta(player.x, player.y,
                                               presence.x, presence.y))
             if pd < 7.0:
                 flicker_next = min(flicker_next, rng.uniform(0.3, 1.5))
+            if audio.ok and player.presence_dist is not None:
+                audio.set_presence(player.presence_dist, player.presence_bearing)
 
         if flicker_left > 0:
             flicker_left -= dt

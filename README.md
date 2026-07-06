@@ -66,10 +66,20 @@ real positional audio, louder and panned as it closes. The lights get
 nervous when it's near. Catch line of sight and there's a dark figure at
 the end of the corridor.
 
-Past a fear threshold the wanderer panics and **runs**, planning escape
-routes away from it (manual mode: hold `SHIFT` to run). You can outrun
-it. You cannot make it stop. If it ever reaches you: lights out — and
-you're somewhere else in the level, heart pounding. Nothing is ever
+Fear is **perception, not radar**: the wanderer only fears what he can
+see (line of sight, in his field of view) or hear. Footsteps behind him
+make him stop, turn, and *look* — and mid-chase he throws glances over
+his shoulder every few seconds without breaking stride. Confirmation is
+what breaks him into a run.
+
+It never teleports. If the Peripheral Shift walls it off, it waits —
+only after a long time sealed away does it turn up somewhere else. It
+always finds another way.
+
+Past the fear threshold the wanderer panics and **runs**, planning
+escape routes away from it (manual mode: hold `SHIFT` to run). You can
+outrun it. You cannot make it stop. If it ever reaches you: lights out —
+and you're somewhere else in the level, heart pounding. Nothing is ever
 confirmed on Level 0.
 
 `--no-entity` turns it off for a peaceful screensaver.
@@ -88,8 +98,13 @@ stride. `--hires` renders at 640x400 instead of 480x300.
   Level 0, 60 Hz on Level 1 (`--mute` to silence). The hum is **proximity
   based**: loud under a live panel, faint in blackout zones, dipping when
   the lights flicker.
-- **dying lights** sputter and ring down — electrical crackle and a thin
-  fading whine, no Hollywood thud
+- **dying lights are rare and uncertain** — a bank starts sputtering in
+  irregular stutters and holds, and usually steadies itself. Sometimes it
+  doesn't: electrical crackle and a thin whine ringing down, no Hollywood
+  thud. You'll find yourself wondering every time.
+- **distant danger** — knocks, drags, low room-tone swells, all panned to
+  where it actually is; the closer it gets, the more frantic the
+  soundscape becomes
 - **its footsteps**, positional and panned — approaching or receding for
   real. God save you if you hear something wandering around nearby,
   because it sure as hell has heard you.
@@ -113,6 +128,8 @@ Plus, from the same canon research:
 - **Peripheral Shift** — the map quietly re-carves itself in areas you are
   not looking at, so retracing your steps never quite works. Watch it happen
   on the minimap (`M`). Disable with `--no-shift`.
+- **doorways** — door-height lintels punched into wall gaps, so the
+  segmented rooms read as rooms instead of missing wall
 - dead ends everywhere, and the world wraps at the edges — it goes on
   seemingly forever
 - no entities. Level 0 is empty. That's the point.
@@ -211,6 +228,15 @@ spacing) live in the `Config` dataclass at the top of
 3. **Cleanup** — orphan floor specks stranded in solid wall are removed.
    Lone wall cells in open floor are deliberately kept: they read as
    pillars.
+
+## Standalone app
+
+```bash
+./build_app.sh        # macOS: dist/The Backrooms.app (works on Win/Linux too)
+```
+
+Bundles everything with PyInstaller, using an icon rendered by the engine
+itself ([assets/icon.png](assets/icon.png) — that's a real generated frame).
 
 ## Ideas / contributions welcome
 
