@@ -88,14 +88,19 @@ void main() {
     if (mat == 3) {                        // fluorescent panel: emissive
         c = base * (0.10 + 1.55 * cell_l * flick);
     } else {
+        // Two-sided lighting: faces are emitted once per boundary and
+        // visible from both sides — flip the normal toward the viewer or
+        // every backside (stair risers seen from above, fascias from
+        // ledges, pit shafts) renders near-black and reads as a HOLE.
+        vec3 N = (dot(cam - wpos, norm) < 0.0) ? -norm : norm;
         // ambient tied to local light, plus a tiny unconditional floor so
-        // unlit geometry reads as dark wall, not as a hole in the world
+        // unlit geometry reads as dark wall, not as a gap in the world
         vec3 acc = vec3(0.18) * cell_l + vec3(0.035);
         for (int i = 0; i < nlights; i++) {
             vec3 L = lpos[i] - wpos;
             float d = length(L);
             float att = 1.0 / (0.9 + 0.6 * d + 0.5 * d * d);
-            float nl = max(dot(normalize(L), norm), 0.0);
+            float nl = max(dot(normalize(L), N), 0.0);
             // nl is direct light; the small constant is scattered bounce
             // so ceilings and shadowed faces aren't pure black
             acc += lcol[i] * att * (nl * 1.25 + 0.16);

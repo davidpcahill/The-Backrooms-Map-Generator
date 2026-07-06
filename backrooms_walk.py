@@ -441,14 +441,51 @@ class World:
             blob |= add
         return blob
 
+    def _absorb_enclaves(self, blob):
+        """Open regions fully ENCLOSED by the blob (not reaching its
+        bounding box border) get absorbed. Without this, a normal-height
+        'room' inside a tall hall keeps its ceiling — a slab hanging in
+        space with no walls under it."""
+        xs = [c[0] for c in blob]
+        ys = [c[1] for c in blob]
+        x0, x1 = min(xs) - 1, max(xs) + 1
+        y0, y1 = min(ys) - 1, max(ys) + 1
+        seen = set()
+        for sy in range(y0, y1 + 1):
+            for sx in range(x0, x1 + 1):
+                start = (sx, sy)
+                if (start in blob or start in seen
+                        or start not in self.open_set):
+                    continue
+                region = {start}
+                queue = deque([start])
+                seen.add(start)
+                enclosed = True
+                while queue:
+                    x, y = queue.popleft()
+                    if not (x0 < x < x1 and y0 < y < y1):
+                        enclosed = False   # reaches the border: connected out
+                    for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                        n = (x + dx, y + dy)
+                        if (n not in blob and n not in seen
+                                and n in self.open_set
+                                and x0 <= n[0] <= x1 and y0 <= n[1] <= y1):
+                            seen.add(n)
+                            region.add(n)
+                            queue.append(n)
+                if enclosed:
+                    blob |= region
+        return blob
+
     def _add_tall_halls(self, rng):
         # Canon: "massive chambers with pillars in lattice or grid patterns"
-        # Hole-fill twice: speckle holes first, then absorb skinny fringe
-        # strips whose normal-height ceilings would float like planks.
+        # Hole-fill (speckles), absorb fringe strips, then absorb whole
+        # ENCLOSED rooms — their ceilings would otherwise float unsupported.
         for _ in range(rng.randint(*STYLE["tall"])):
             h = rng.uniform(*STYLE["tall_h"])
             blob = self._fill_holes(self._blob(rng, rng.randint(150, 600)))
             blob = self._fill_holes(blob, min_n=4, passes=2)
+            blob = self._absorb_enclaves(blob)
             for x, y in blob:
                 if self.ceil[y][x] > 0:
                     self.ceil[y][x] = h
@@ -464,7 +501,9 @@ class World:
         lo, hi = STYLE["crawl"]
         for _ in range(rng.randint(lo, hi)):
             for x, y in self._blob(rng, rng.randint(80, 300)):
-                if self.ceil[y][x] > 0:
+                # flat, normal-height cells only: a crawl ceiling over a
+                # sunken floor (or inside a tall hall) is a box in space
+                if (0 < self.ceil[y][x] <= 1.3 and self.floor[y][x] == 0.0):
                     self.ceil[y][x] = 0.45
                     self.light[y][x] = min(self.light[y][x], 0.7)
 
