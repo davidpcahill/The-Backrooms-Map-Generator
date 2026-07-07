@@ -403,16 +403,30 @@ class World:
 
     # -- zone helpers -------------------------------------------------------
 
-    def _blob(self, rng, size):
-        if not self.open_set:
+    def _open3(self, x, y):
+        """True when the full 3x3 around (x, y) is open — room interior,
+        not corridor."""
+        return all((x + dx, y + dy) in self.open_set
+                   for dx in (-1, 0, 1) for dy in (-1, 0, 1))
+
+    def _blob(self, rng, size, rooms_only=False):
+        """Grow a connected blob of open cells. rooms_only restricts
+        growth to room interiors: floor-height features (sunken wings,
+        raked floors, pits) that leak into the corridor maze scatter
+        random dips down every hallway."""
+        cand = ([c for c in sorted(self.open_set) if self._open3(*c)]
+                if rooms_only else sorted(self.open_set))
+        if not cand:
             return set()
-        start = rng.choice(sorted(self.open_set))
+        start = rng.choice(cand)
         blob = {start}
         frontier = [start]
         while frontier and len(blob) < size:
             x, y = frontier[rng.randrange(len(frontier))]
             nbrs = [(x + dx, y + dy) for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))
-                    if (x + dx, y + dy) in self.open_set and (x + dx, y + dy) not in blob]
+                    if (x + dx, y + dy) in self.open_set
+                    and (x + dx, y + dy) not in blob
+                    and (not rooms_only or self._open3(x + dx, y + dy))]
             if not nbrs:
                 frontier.remove((x, y))
                 continue
@@ -510,9 +524,20 @@ class World:
     def _add_sunken_wings(self, rng):
         """Lower wings: the floor descends ring by ring from the edge.
         Some wings keep hard 0.25-unit steps (stairs); others get smooth
-        per-cell slopes (ramps — every wing in the parking garage)."""
+        per-cell slopes (ramps — every wing in the parking garage).
+        The blob is made COHERENT first: hole-filled and pruned of
+        stringy arms. Scattered single-cell dips litter corridors with
+        random 25 cm pits that read as holes and shred distant views."""
         for _ in range(rng.randint(*STYLE["sunken"])):
-            blob = self._blob(rng, rng.randint(150, 450))
+            blob = self._fill_holes(self._blob(rng, rng.randint(150, 450), rooms_only=True))
+            nbrs8 = tuple((dx, dy) for dx in (-1, 0, 1)
+                          for dy in (-1, 0, 1) if dx or dy)
+            for _ in range(2):      # prune arms hard: fat bowls only
+                blob = {c for c in blob
+                        if sum((c[0] + dx, c[1] + dy) in blob
+                               for dx, dy in nbrs8) >= 5}
+            if len(blob) < 60:      # too shredded to be a wing
+                continue
             if not blob:
                 continue
             edge = [c for c in blob
@@ -559,8 +584,14 @@ class World:
         a few degrees in one direction — barely enough to notice, exactly
         enough to be wrong."""
         for _ in range(rng.randint(*STYLE["raked"])):
-            blob = self._blob(rng, rng.randint(80, 250))
-            if not blob:
+            blob = self._fill_holes(self._blob(rng, rng.randint(80, 250), rooms_only=True))
+            nbrs8 = tuple((dx, dy) for dx in (-1, 0, 1)
+                          for dy in (-1, 0, 1) if dx or dy)
+            for _ in range(2):
+                blob = {c for c in blob
+                        if sum((c[0] + dx, c[1] + dy) in blob
+                               for dx, dy in nbrs8) >= 5}
+            if len(blob) < 50:
                 continue
             cx = sum(c[0] for c in blob) / len(blob)
             cy = sum(c[1] for c in blob) / len(blob)
@@ -578,7 +609,7 @@ class World:
 
     def _add_pitfalls(self, rng):
         for _ in range(rng.randint(*STYLE["pits"])):
-            blob = self._blob(rng, rng.randint(120, 350))
+            blob = self._blob(rng, rng.randint(120, 350), rooms_only=True)
             for x, y in blob:
                 if self.ceil[y][x] > 0 and x % 3 != 0 and y % 3 != 0:
                     if self.floor[y][x] == 0.0:
@@ -608,17 +639,13 @@ class World:
                     continue
                 L, Rt = self.solid(x - 1, y), self.solid(x + 1, y)
                 U, D = self.solid(x, y - 1), self.solid(x, y + 1)
-                # single-width gap in a wall line
+                # Single-width gaps in a wall line ONLY. Lintels across the
+                # common 2-wide gaps between wall blocks put a thin ceiling
+                # slab over every corridor mouth — seen edge-on at range
+                # they render as stacked dark blades jutting off the walls.
                 if (L and Rt and not U and not D) or (U and D and not L and not Rt):
                     if rng.random() < 0.6:
                         lintels.append((x, y))
-                # double-width gap
-                elif (L and not Rt and open_norm(x + 1, y) and self.solid(x + 2, y)
-                        and not U and not D and rng.random() < 0.45):
-                    lintels += [(x, y), (x + 1, y)]
-                elif (U and not D and open_norm(x, y + 1) and self.solid(x, y + 2)
-                        and not L and not Rt and rng.random() < 0.45):
-                    lintels += [(x, y), (x, y + 1)]
         for x, y in lintels:
             self.ceil[y][x] = DOOR_H
 

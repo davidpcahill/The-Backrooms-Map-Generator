@@ -432,45 +432,12 @@ class WorldMesh:
                 base += gx * (px - x - 0.5) + gy * (pz - y - 0.5)
             return base
 
-        corner_cache = {}
-
-        def corner_clusters(cx_, cz_):
-            """Cluster the plane heights of all open cells meeting at an
-            integer corner (sorted, split at gaps > 0.13). Deterministic
-            from world state alone, so every cell — in every chunk — that
-            shares this corner computes the IDENTICAL welded height.
-            The old per-cell relative averaging disagreed at T-junctions,
-            leaving hairline cracks that shredded into slivers at range."""
-            got = corner_cache.get((cx_, cz_))
-            if got is not None:
-                return got
-            vals = []
-            for ox, oz in ((-1, -1), (0, -1), (-1, 0), (0, 0)):
-                x, y = cx_ + ox, cz_ + oz
-                if not (0 <= x < w.cols and 0 <= y < w.rows):
-                    continue
-                if w.floor[y][x] < w.ceil[y][x]:
-                    vals.append(fh(x, y, cx_, cz_))
-            vals.sort()
-            clusters = []
-            i = 0
-            while i < len(vals):
-                j = i
-                while j + 1 < len(vals) and vals[j + 1] - vals[j] < 0.13:
-                    j += 1
-                seg = vals[i:j + 1]
-                clusters.append((seg[0] - 1e-3, seg[-1] + 1e-3,
-                                 sum(seg) / len(seg)))
-                i = j + 1
-            corner_cache[(cx_, cz_)] = clusters
-            return clusters
-
-        def corner_h(cx_, cz_, ref_x, ref_y):
-            ref = fh(ref_x, ref_y, cx_, cz_)
-            for lo, hi, mean in corner_clusters(cx_, cz_):
-                if lo <= ref <= hi:
-                    return mean
-            return ref
+        # NOTE: no corner welding. Every clever cross-cell corner scheme
+        # tried here produced either hairline cracks (per-cell averaging)
+        # or degenerate wedge spikes (cluster means at 3-level corners).
+        # Instead: floors use their own plane, and every edge gets ONE
+        # slightly-oversized sealing rectangle covering the full height
+        # mismatch. Rectangles cannot wedge; overlap cannot crack.
 
         def quad(p1, p2, p3, p4, uvs, n, mat, sh=(1, 1, 1, 1)):
             a = (*p1, *uvs[0], *n, mat, sh[0])
@@ -514,11 +481,11 @@ class WorldMesh:
                 f, c = w.floor[y][x], w.ceil[y][x]
                 if f >= c:
                     continue    # solid: faces drawn by open neighbors
-                # floor (slope-aware, corner-welded)
-                h00 = corner_h(x, y, x, y)
-                h10 = corner_h(x + 1, y, x, y)
-                h11 = corner_h(x + 1, y + 1, x, y)
-                h01 = corner_h(x, y + 1, x, y)
+                # floor: this cell's own plane, no cross-cell blending
+                h00 = fh(x, y, x, y)
+                h10 = fh(x, y, x + 1, y)
+                h11 = fh(x, y, x + 1, y + 1)
+                h01 = fh(x, y, x, y + 1)
                 gx, gy = w.gx[y][x], w.gy[y][x]
                 n = np.array([-gx, 1.0, -gy]); n = n / np.linalg.norm(n)
                 pit_floor = f <= bw.PIT_FLOOR + 0.01
@@ -544,29 +511,30 @@ class WorldMesh:
                     if outside:
                         nf, nc = 0.0, 0.0   # beyond the border: sealed
                     (ax, az), (bx, bz) = seg
+                    # my floor heights at the two shared corners
+                    ma = fh(x, y, ax, az)
+                    mb = fh(x, y, bx, bz)
                     if nf >= nc:
                         # full wall face of the solid neighbor
-                        e0 = min(corner_h(ax, az, x, y), corner_h(bx, bz, x, y))
-                        wall(ax, az, bx, bz, e0, c, nrm, e0)
+                        e0 = min(ma, mb) - 0.02
+                        wall(ax, az, bx, bz, e0, c, nrm, min(ma, mb))
                     else:
-                        # riser: neighbor floor higher than mine, evaluated
-                        # per shared corner so ramps stay seamless
-                        ma = corner_h(ax, az, x, y)
-                        mb = corner_h(bx, bz, x, y)
-                        ta = corner_h(ax, az, x + dx, y + dy)
-                        tb = corner_h(bx, bz, x + dx, y + dy)
-                        if ta > ma + 0.02 or tb > mb + 0.02:
-                            mine = min(ma, mb)
-                            deep = (mine <= bw.PIT_FLOOR + 0.01
-                                    and max(ta, tb) - mine > 1.2)
-                            quad((ax, ma, az), (bx, mb, bz),
-                                 (bx, max(tb, mb), bz), (ax, max(ta, ma), az),
-                                 ((0, ma), (1, mb), (1, max(tb, mb)), (0, max(ta, ma))),
-                                 nrm, 4 if deep else 5)
+                        # floor-height seal: ONE oversized rectangle
+                        # covering the entire mismatch across this edge
+                        # (steps, ramp seams, pit rims — all of it).
+                        # Owned by the lower cell so it's emitted once.
+                        ta = fh(x + dx, y + dy, ax, az)
+                        tb = fh(x + dx, y + dy, bx, bz)
+                        lo = min(ma, mb, ta, tb)
+                        hi = max(ma, mb, ta, tb)
+                        mine_lower = (min(ma, mb), x, y) <= (min(ta, tb), x + dx, y + dy)
+                        if hi - lo > 0.004 and mine_lower:
+                            deep = lo <= bw.PIT_FLOOR + 0.01 and hi - lo > 1.2
+                            wall(ax, az, bx, bz, lo - 0.015,
+                                 min(hi + 0.015, c), nrm, lo, pit=deep)
                         # upper step: neighbor ceiling lower than mine
                         if nc < c - 0.003:
-                            wall(ax, az, bx, bz, nc, c, nrm,
-                                 min(corner_h(ax, az, x, y), corner_h(bx, bz, x, y)))
+                            wall(ax, az, bx, bz, nc, c, nrm, min(ma, mb))
 
         key = (cx, cy)
         old = self.chunks.pop(key, None)
@@ -743,6 +711,8 @@ def main(argv=None):
                     choices=("tall", "crawl", "pit", "stairs", "ramp"), default=None)
     ap.add_argument("--test-death", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--debug-overlay", action="store_true", help=argparse.SUPPRESS)
+    ap.add_argument("--autoshot", metavar="DIR", default=None, help=argparse.SUPPRESS)
+    ap.add_argument("--auto-quit", type=float, default=None, help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
 
     bw.apply_style(args.level)
@@ -1115,7 +1085,12 @@ def main(argv=None):
             sprite_prog["cell_l"].value = cell_l
             stex.use(2)
             sprite_prog["tex"].value = 2
-            # soft contact blob under the feet
+            # soft contact blob under the feet (skip on uneven ground —
+            # a blob hovering over a ledge reads as a floating slab)
+            blob_ok = all(
+                abs(world.floor_at(presence.x + ox, presence.y + oy) - pz) < 0.08
+                for ox, oy in ((-0.45, -0.45), (0.45, -0.45),
+                               (-0.45, 0.45), (0.45, 0.45)))
             s = 0.45
             sh = np.array([
                 cxp - s, pz + 0.012, czp - s, 0, 0,
@@ -1124,11 +1099,12 @@ def main(argv=None):
                 cxp - s, pz + 0.012, czp + s, 0, 1,
                 cxp + s, pz + 0.012, czp - s, 1, 0,
                 cxp + s, pz + 0.012, czp + s, 1, 1], dtype=np.float32)
-            sprite_prog["mode"].value = 1
-            sprite_prog["shadow_k"].value = 0.0
-            sprite_prog["layer"].value = 0.0
-            sprite_vbo.write(sh.tobytes())
-            sprite_vao.render()
+            if blob_ok:
+                sprite_prog["mode"].value = 1
+                sprite_prog["shadow_k"].value = 0.0
+                sprite_prog["layer"].value = 0.0
+                sprite_vbo.write(sh.tobytes())
+                sprite_vao.render()
 
             hw = wdt / 2
             bl = (cxp - rightx * hw, pz, czp - rightz * hw)
@@ -1160,6 +1136,17 @@ def main(argv=None):
                         break
                     t_ = (ly - (pz + 0.008)) / denom
                     projected.append(L + (Pv - L) * t_)
+                if projected is not None:
+                    # The shadow lives on ITS floor plane. If any corner
+                    # hangs over ground at a different height (plateau
+                    # rims, terraces), the quad floats in space and reads
+                    # as dark spikes/slabs across the room. Clip it.
+                    for S in projected:
+                        if (math.hypot(S[0] - presence.x, S[2] - presence.y) > 4.0
+                                or abs(world.floor_at(float(S[0]), float(S[2]))
+                                       - pz) > 0.08):
+                            projected = None
+                            break
                 if projected is not None:
                     ldist = math.sqrt(best[0])
                     k = max(0.15, min(0.6, 1.5 / (1.0 + ldist)))
@@ -1258,6 +1245,20 @@ def main(argv=None):
                 draw_overlay("hud", text, 16, H - 34,
                              min(1.0, hud_timer / 0.5))
             ctx.disable(0x0BE2)
+
+        if args.autoshot and not headless:
+            if int(t_now / 2.0) != int((t_now - dt) / 2.0):
+                os.makedirs(args.autoshot, exist_ok=True)
+                data = window_fbo.read(components=3)
+                from PIL import Image
+                Image.frombytes("RGB", (W, H), data).transpose(
+                    Image.FLIP_TOP_BOTTOM).save(
+                    f"{args.autoshot}/shot_{int(t_now):03d}.png")
+                with open(f"{args.autoshot}/poses.txt", "a") as fh:
+                    fh.write(f"{int(t_now):03d} {player.x:.3f} {player.y:.3f} "
+                             f"{yaw:.4f} {pitch:.4f} {player.eye_z():.3f}\n")
+        if args.auto_quit and t_now >= args.auto_quit:
+            running = False
 
         if not headless:
             pygame.display.flip()
