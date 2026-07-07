@@ -415,6 +415,20 @@ def build_textures(ctx, pygame_module):
     door.fill((200, 180, 120), (size - 34, 118, 10, 10))   # knob
     surfs.append(door)
 
+    # 7: pipe metal — dark verdigris steel, flange rings, rust streaks.
+    # u runs ALONG the pipe, so the vertical stripes become rings.
+    pipe_c = (74, 78, 72)
+    pipe = new(pipe_c)
+    speckle(pipe, pipe_c, 1400, 4, 12, 2)
+    for x0 in range(0, size, 64):
+        pipe.fill((56, 58, 54), (x0, 0, 7, size))
+        pipe.fill((96, 100, 92), (x0 + 7, 0, 2, size))
+    for _ in range(26):
+        x = rng.randrange(size)
+        y0 = rng.randrange(size - 40)
+        pipe.fill((92, 64, 44), (x, y0, rng.randint(1, 2), rng.randint(12, 40)))
+    surfs.append(pipe)
+
     data = b"".join(
         pygame_module.image.tobytes(s, "RGBA") for s in surfs)
     tex = ctx.texture_array((size, size, len(surfs)), 4, data)
@@ -518,6 +532,52 @@ class WorldMesh:
                      ((0, v0), (ulen, v0), (ulen, v1), (0, v1)),
                      nrm, mat, (sh_b, sh_b, 1.0, 1.0))
 
+        def pipe_run(kind, args_, f, c, x, y):
+            """One pipe segment as a thin 4-sided box, mat 7. Runs are
+            extended a hair past the cell so joints never gap."""
+            r = 0.045
+            if kind == "v":
+                ox, oz = args_
+                px_, pz_ = x + ox, y + oz
+                b0, b1 = f + 0.001, c - 0.001
+                faces = (
+                    ((px_ - r, b0, pz_ - r), (px_ + r, b0, pz_ - r),
+                     (px_ + r, b1, pz_ - r), (px_ - r, b1, pz_ - r), (0, 0, -1)),
+                    ((px_ - r, b0, pz_ + r), (px_ + r, b0, pz_ + r),
+                     (px_ + r, b1, pz_ + r), (px_ - r, b1, pz_ + r), (0, 0, 1)),
+                    ((px_ - r, b0, pz_ - r), (px_ - r, b0, pz_ + r),
+                     (px_ - r, b1, pz_ + r), (px_ - r, b1, pz_ - r), (-1, 0, 0)),
+                    ((px_ + r, b0, pz_ - r), (px_ + r, b0, pz_ + r),
+                     (px_ + r, b1, pz_ + r), (px_ + r, b1, pz_ - r), (1, 0, 0)),
+                )
+                for p1, p2, p3, p4, nn in faces:
+                    quad(p1, p2, p3, p4,
+                         ((b0, 0), (b0, 0.9), (b1, 0.9), (b1, 0)), nn, 7)
+                return
+            off, hh = args_
+            if kind == "x":
+                a0, a1 = x - 0.005, x + 1.005
+
+                def P(u_, s_, t_):
+                    return (u_, hh + t_, y + off + s_)
+                n_side = ((0, 0, -1), (0, 0, 1))
+            else:
+                a0, a1 = y - 0.005, y + 1.005
+
+                def P(u_, s_, t_):
+                    return (x + off + s_, hh + t_, u_)
+                n_side = ((-1, 0, 0), (1, 0, 0))
+            faces = (
+                (P(a0, -r, r), P(a1, -r, r), P(a1, r, r), P(a0, r, r), (0, 1, 0)),
+                (P(a0, -r, -r), P(a1, -r, -r), P(a1, r, -r), P(a0, r, -r), (0, -1, 0)),
+                (P(a0, -r, -r), P(a1, -r, -r), P(a1, -r, r), P(a0, -r, r), n_side[0]),
+                (P(a0, r, -r), P(a1, r, -r), P(a1, r, r), P(a0, r, r), n_side[1]),
+            )
+            for p1, p2, p3, p4, nn in faces:
+                quad(p1, p2, p3, p4,
+                     ((a0, 0), (a1, 0), (a1, 0.9), (a0, 0.9)), nn, 7)
+
+        pipes_map = getattr(w, "pipes", {})
         x_lo, x_hi = cx * CHUNK, min((cx + 1) * CHUNK, w.cols)
         y_lo, y_hi = cy * CHUNK, min((cy + 1) * CHUNK, w.rows)
         for y in range(y_lo, y_hi):
@@ -543,6 +603,8 @@ class WorldMesh:
                       ((x + 1) * 0.5, (y + 1) * 0.5), (x * 0.5, (y + 1) * 0.5))
                 quad((x, c, y + 1), (x + 1, c, y + 1), (x + 1, c, y), (x, c, y),
                      uv, (0, -1, 0), mat)
+                for run in pipes_map.get((x, y), ()):
+                    pipe_run(run[0], run[1:], f, c, x, y)
                 # walls to the 4 neighbors
                 for dx, dy, nrm, seg in (
                         (1, 0, (-1, 0, 0), ((x + 1, y + 1), (x + 1, y))),

@@ -149,20 +149,23 @@ STYLES = {
     # Level 2 does NOT shift — the maze you map stays mapped.
     2: dict(
         name="Level 2", kind="concrete",
-        wall_upper=(96, 92, 84), wall_lower=(74, 70, 62),
-        wall_trim=(52, 48, 40), ceil_tile=(70, 68, 62),
-        light_panel=(255, 210, 150), carpet=(58, 56, 50),
-        pit_shaft=(30, 28, 24), pit_bottom=(4, 4, 3), fog=(6, 5, 4),
+        wall_upper=(72, 68, 60), wall_lower=(56, 52, 45),
+        wall_trim=(40, 37, 31), ceil_tile=(50, 48, 43),
+        light_panel=(255, 200, 130), carpet=(40, 38, 34),
+        pit_shaft=(24, 22, 19), pit_bottom=(3, 3, 2), fog=(4, 3, 2),
+        fog_density=0.16, light_scale=0.8,
         hum_freq=60, ceil_norm=0.85,
         tall=(0, 1), tall_h=(1.3, 1.7), crawl=(4, 7), sunken=(0, 0),
-        pits=(0, 0), blackouts=(3, 5), raked=(0, 0), ramp_chance=0.0,
+        pits=(0, 0), blackouts=(4, 6), raked=(0, 0), ramp_chance=0.0,
         mezzanines=(0, 1),
-        panel=lambda x, y: (x + y) % 5 == 0, panel_prob=0.5,
+        panel=lambda x, y: (x + y) % 6 == 0, panel_prob=0.4,
         gen=dict(rooms=1, pillar_rooms=1, poly_rooms=0,
                  fill=0.60, merge_stop=0.5),
-        closed_rooms=(2, 4),
+        closed_rooms=(4, 7),
         drips=True,
         shift=False,
+        pipes=True,
+        machines=True,
         monster_tint=(255, 130, 100),
     ),
     # Level 37 "Poolrooms": white tile, bright diffuse light, empty
@@ -502,6 +505,7 @@ class World:
         self._add_closed_rooms(rng)
         self._add_doorways(rng)
         self._place_panels(rng)
+        self._add_pipes(rng)
 
         # Interest map: cells where the architecture does something —
         # tall halls, crawlspaces, stairs and lower floors, doors. The
@@ -797,6 +801,35 @@ class World:
                 if built:
                     break
 
+    def _add_pipes(self, rng):
+        """Level 2: pipe runs hugging the walls just under the ceiling,
+        with occasional floor-to-ceiling risers. Decorative geometry (GL
+        renderer) — no collision, and safe from the Shift because Level 2
+        canonically does not shift. Heights are staggered per wall side
+        so parallel runs read as separate lines, not one thick slab."""
+        self.pipes = {}
+        if not STYLE.get("pipes"):
+            return
+        for (x, y) in sorted(self.open_set):
+            f, c = self.floor[y][x], self.ceil[y][x]
+            if f != 0.0 or c - f < 0.6:
+                continue
+            runs = []
+            if self.solid(x, y - 1):
+                runs.append(("x", 0.10, c - 0.13))
+                if (x * 7 + y * 13) % 11 == 0:
+                    runs.append(("v", 0.10, 0.10))
+            if self.solid(x, y + 1):
+                runs.append(("x", 0.90, c - 0.20))
+            if self.solid(x - 1, y):
+                runs.append(("y", 0.10, c - 0.27))
+            if self.solid(x + 1, y):
+                runs.append(("y", 0.90, c - 0.13))
+                if (x * 5 + y * 17) % 13 == 0:
+                    runs.append(("v", 0.90, 0.90))
+            if runs:
+                self.pipes[(x, y)] = runs
+
     def _add_closed_rooms(self, rng):
         """Actual ROOMS: walled rectangles stamped into open areas, one
         doorway with a real door panel. Some are dark inside. The door
@@ -828,6 +861,19 @@ class World:
                     self.ceil[y][x0 + w - 1] = 0.0
                     self.room_walls.add((x0, y))
                     self.room_walls.add((x0 + w - 1, y))
+                # machine rooms (Level 2): hulking solid housings inside,
+                # kept a full cell off the walls so the room stays
+                # walkable ring-around and the door always connects
+                if STYLE.get("machines") and w >= 7 and h >= 6:
+                    for _ in range(rng.randint(1, 2)):
+                        mw = rng.randint(1, 2)
+                        mh = rng.randint(1, 2)
+                        mx = rng.randint(x0 + 2, x0 + w - 2 - mw)
+                        my = rng.randint(y0 + 2, y0 + h - 2 - mh)
+                        for yy in range(my, my + mh):
+                            for xx in range(mx, mx + mw):
+                                self.ceil[yy][xx] = 0.0
+                                self.room_walls.add((xx, yy))
                 # one door, middle of a random side, lintel above it
                 side = rng.randrange(4)
                 if side == 0:
