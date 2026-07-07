@@ -38,6 +38,8 @@ import os
 import random
 import sys
 
+import moderngl
+
 import numpy as np
 
 import backrooms_walk as bw
@@ -445,6 +447,16 @@ def build_textures(ctx, pygame_module):
                   min(rng.randint(8, 24), size - by_)))
     surfs.append(ins)
 
+    # 9: valve-wheel red — chipped red-oxide paint over iron
+    val_c = (126, 42, 34)
+    valve = new(val_c)
+    speckle(valve, val_c, 2000, 6, 22, 2)
+    for _ in range(14):     # paint chipped through to dark iron
+        vx_ = rng.randrange(size)
+        vy_ = rng.randrange(size)
+        valve.fill((52, 48, 46), (vx_, vy_, rng.randint(2, 9), rng.randint(2, 7)))
+    surfs.append(valve)
+
     data = b"".join(
         pygame_module.image.tobytes(s, "RGBA") for s in surfs)
     tex = ctx.texture_array((size, size, len(surfs)), 4, data)
@@ -548,65 +560,122 @@ class WorldMesh:
                      ((0, v0), (ulen, v0), (ulen, v1), (0, v1)),
                      nrm, mat, (sh_b, sh_b, 1.0, 1.0))
 
+        def tube(pts, r, m, n=8, u0=0.0):
+            """Sweep a circle of radius r along a polyline: REAL round
+            pipes that can turn corners. Normals point outward; u runs
+            along the length so texture rings wrap the pipe."""
+            k = len(pts)
+            if k < 2:
+                return
+            rings = []
+            us = []
+            u = u0
+            for i in range(k):
+                p = np.array(pts[i], dtype=np.float64)
+                a = np.array(pts[max(0, i - 1)], dtype=np.float64)
+                b = np.array(pts[min(k - 1, i + 1)], dtype=np.float64)
+                T = b - a
+                tl = np.linalg.norm(T)
+                T = T / (tl or 1.0)
+                up = np.array((0.0, 1.0, 0.0)) if abs(T[1]) < 0.9 \
+                    else np.array((1.0, 0.0, 0.0))
+                N = np.cross(up, T)
+                N /= np.linalg.norm(N) or 1.0
+                B = np.cross(T, N)
+                if i:
+                    u += np.linalg.norm(p - np.array(pts[i - 1]))
+                us.append(u)
+                ring = []
+                for j in range(n):
+                    th = j / n * math.tau
+                    d = N * math.cos(th) + B * math.sin(th)
+                    ring.append((p + d * r, d))
+                rings.append(ring)
+            for i in range(k - 1):
+                r0, r1 = rings[i], rings[i + 1]
+                for j in range(n):
+                    j2 = (j + 1) % n
+                    (pa, da), (pb, db) = r0[j], r0[j2]
+                    (pc, dc), (pd, dd) = r1[j], r1[j2]
+                    v0, v1 = j / n * 0.9, (j + 1) / n * 0.9
+                    emit((*pa, us[i], v0, *da, m, 1.0))
+                    emit((*pc, us[i + 1], v0, *dc, m, 1.0))
+                    emit((*pd, us[i + 1], v1, *dd, m, 1.0))
+                    emit((*pa, us[i], v0, *da, m, 1.0))
+                    emit((*pd, us[i + 1], v1, *dd, m, 1.0))
+                    emit((*pb, us[i], v1, *db, m, 1.0))
+
+        def bend_pts(end, d_along, d_wall, rb, stub):
+            """Quarter-arc from `end` turning from run direction into the
+            wall/ceiling direction, plus a stub buried in the surface."""
+            pts = []
+            for i in range(4):
+                th = (i / 3) * (math.pi / 2)
+                pts.append((end[0] + d_along[0] * rb * math.sin(th)
+                            + d_wall[0] * rb * (1 - math.cos(th)),
+                            end[1] + d_along[1] * rb * math.sin(th)
+                            + d_wall[1] * rb * (1 - math.cos(th)),
+                            end[2] + d_along[2] * rb * math.sin(th)
+                            + d_wall[2] * rb * (1 - math.cos(th))))
+            pts.append((pts[-1][0] + d_wall[0] * stub,
+                        pts[-1][1] + d_wall[1] * stub,
+                        pts[-1][2] + d_wall[2] * stub))
+            return pts
+
         def pipe_run(kind, args_, f, c, x, y):
-            """One pipe segment as a 4-sided box. Radius and material come
-            from the run (fat wrapped trunks vs thin steel conduit). Runs
-            are extended a hair past the cell so joints never gap."""
+            """One pipe cell: straight cylinder; any cut end (wall break,
+            handover, ceiling step) BENDS into the nearest surface — the
+            wall behind a rack, the ceiling above a chase — the way real
+            plumbing ducks out of a corridor. No sawed-off ends."""
             if kind == "v":
                 ox, oz, r, m = args_
-                px_, pz_ = x + ox, y + oz
-                b0, b1 = f + 0.001, c - 0.001
-                faces = (
-                    ((px_ - r, b0, pz_ - r), (px_ + r, b0, pz_ - r),
-                     (px_ + r, b1, pz_ - r), (px_ - r, b1, pz_ - r), (0, 0, -1)),
-                    ((px_ - r, b0, pz_ + r), (px_ + r, b0, pz_ + r),
-                     (px_ + r, b1, pz_ + r), (px_ - r, b1, pz_ + r), (0, 0, 1)),
-                    ((px_ - r, b0, pz_ - r), (px_ - r, b0, pz_ + r),
-                     (px_ - r, b1, pz_ + r), (px_ - r, b1, pz_ - r), (-1, 0, 0)),
-                    ((px_ + r, b0, pz_ - r), (px_ + r, b0, pz_ + r),
-                     (px_ + r, b1, pz_ + r), (px_ + r, b1, pz_ - r), (1, 0, 0)),
-                )
-                for p1, p2, p3, p4, nn in faces:
-                    quad(p1, p2, p3, p4,
-                         ((b0, 0), (b0, 0.9), (b1, 0.9), (b1, 0)), nn, m)
+                tube(((x + ox, f - 0.01, y + oz), (x + ox, c + 0.01, y + oz)),
+                     r, m, n=8, u0=f)
+                return
+            if kind == "w":
+                # a valve wheel on the trunk: rim torus + spokes + axle
+                off, hh, rt, m = args_
+                sgn = 1.0 if off < 0.5 else -1.0     # into the corridor
+                ctr = (x + 0.5, hh, y + off + sgn * (rt + 0.06))
+                wr = 0.085
+                rim = [(ctr[0] + wr * math.cos(t / 10 * math.tau), ctr[1]
+                        + wr * math.sin(t / 10 * math.tau), ctr[2])
+                       for t in range(11)]
+                tube(rim, 0.016, 9, n=6)
+                for k3 in range(3):
+                    th = k3 / 3 * math.pi
+                    tube(((ctr[0] - wr * math.cos(th), ctr[1] - wr * math.sin(th), ctr[2]),
+                          (ctr[0] + wr * math.cos(th), ctr[1] + wr * math.sin(th), ctr[2])),
+                         0.012, 9, n=6)
+                tube(((ctr[0], ctr[1], y + off), ctr), 0.025, 7, n=6)
                 return
             off, hh, r, m = args_
             run_key = (kind,) + tuple(args_)
             if kind == "x":
-                a0, a1 = x - 0.005, x + 1.005
                 nb0, nb1 = (x - 1, y), (x + 1, y)
-
-                def P(u_, s_, t_):
-                    return (u_, hh + t_, y + off + s_)
-                n_side = ((0, 0, -1), (0, 0, 1))
-                cap_n = ((-1, 0, 0), (1, 0, 0))
+                p0, p1 = (x, hh, y + off), (x + 1.0, hh, y + off)
+                d_al = ((-1, 0, 0), (1, 0, 0))
             else:
-                a0, a1 = y - 0.005, y + 1.005
                 nb0, nb1 = (x, y - 1), (x, y + 1)
-
-                def P(u_, s_, t_):
-                    return (x + off + s_, hh + t_, u_)
-                n_side = ((-1, 0, 0), (1, 0, 0))
-                cap_n = ((0, 0, -1), (0, 0, 1))
-            faces = (
-                (P(a0, -r, r), P(a1, -r, r), P(a1, r, r), P(a0, r, r), (0, 1, 0)),
-                (P(a0, -r, -r), P(a1, -r, -r), P(a1, r, -r), P(a0, r, -r), (0, -1, 0)),
-                (P(a0, -r, -r), P(a1, -r, -r), P(a1, -r, r), P(a0, -r, r), n_side[0]),
-                (P(a0, r, -r), P(a1, r, -r), P(a1, r, r), P(a0, r, r), n_side[1]),
-            )
-            for p1, p2, p3, p4, nn in faces:
-                quad(p1, p2, p3, p4,
-                     ((a0, 0), (a1, 0), (a1, 0.9), (a0, 0.9)), nn, m)
-            # cap any cut end (wall stopped, profile handover, ceiling
-            # step) so a truncated run reads as a capped pipe, not a
-            # hollow box floating in the dark
-            if r >= 0.05:
-                for nb, a_end, nn in ((nb0, a0, cap_n[0]), (nb1, a1, cap_n[1])):
-                    if run_key not in pipes_map.get(nb, ()):
-                        quad(P(a_end, -r, -r), P(a_end, r, -r),
-                             P(a_end, r, r), P(a_end, -r, r),
-                             ((0, 0), (0.2, 0), (0.2, 0.2), (0, 0.2)), nn, m,
-                             (0.55, 0.55, 0.55, 0.55))
+                p0, p1 = (x + off, hh, y), (x + off, hh, y + 1.0)
+                d_al = ((0, 0, -1), (0, 0, 1))
+            # wallward: sideways into the wall for wall racks, upward
+            # into the ceiling for the overhead chase (off near center)
+            if 0.35 < off < 0.65:
+                d_wall = (0, 1, 0)
+                gap = max(0.04, c - hh)
+            else:
+                d_wall = (0, 0, -1) if off < 0.5 else (0, 0, 1)
+                if kind == "y":
+                    d_wall = (-1, 0, 0) if off < 0.5 else (1, 0, 0)
+                gap = min(off, 1.0 - off)
+            rb = max(0.03, min(0.1, gap * 0.7, r * 1.4))
+            tube((p0, p1), r, m, n=10 if r >= 0.08 else 8,
+                 u0=(x if kind == "x" else y))
+            for nb, end, da in ((nb0, p0, d_al[0]), (nb1, p1, d_al[1])):
+                if run_key not in pipes_map.get(nb, ()):
+                    tube(bend_pts(end, da, d_wall, rb, gap), r, m,
+                         n=10 if r >= 0.08 else 8, u0=0.0)
 
         pipes_map = getattr(w, "pipes", {})
         x_lo, x_hi = cx * CHUNK, min((cx + 1) * CHUNK, w.cols)
@@ -777,6 +846,100 @@ class Camcorder:
         rn = (math.sin(t * 1.1 + 0.9) * 0.6 + math.sin(t * 3.1 + 2.7) * 0.3
               + math.sin(t * 7.7) * 0.1) * amp * 1.6
         return fov, sy, self.pitch, rn
+
+
+STEAM_VS = """
+#version 330
+uniform mat4 mvp;
+in vec3 in_pos; in vec2 in_uv; in float in_a;
+out vec2 uv; out float al;
+void main() { gl_Position = mvp * vec4(in_pos, 1.0); uv = in_uv; al = in_a; }
+"""
+
+STEAM_FS = """
+#version 330
+in vec2 uv; in float al;
+out vec4 fragment;
+void main() {
+    float d = length(uv - vec2(0.5)) * 2.0;
+    fragment = vec4(vec3(0.62, 0.60, 0.56), smoothstep(1.0, 0.15, d) * al);
+}
+"""
+
+
+class SteamFX:
+    """Leaking joints: soft puffs drifting off the trunk lines. Motion in
+    a dead place — half the horror of a steam tunnel is that the air
+    moves and you don't know why."""
+
+    def __init__(self, ctx, rng):
+        self.ctx = ctx
+        self.rng = rng
+        self.prog = ctx.program(vertex_shader=STEAM_VS,
+                                fragment_shader=STEAM_FS)
+        self.vbo = ctx.buffer(reserve=6 * 6 * 4 * 512)
+        self.vao = ctx.vertex_array(
+            self.prog, [(self.vbo, "3f 2f 1f", "in_pos", "in_uv", "in_a")])
+        self.puffs = []
+        self.acc = {}
+
+    def update(self, dt, world, p):
+        vents = getattr(world, "steam_vents", ())
+        for i, (vx, vz, vh, nx, nz) in enumerate(vents):
+            dx, dz = world.wrap_delta(p.x, p.y, vx, vz)
+            if dx * dx + dz * dz > 144.0:
+                continue
+            a = self.acc.get(i, 0.0) + dt * self.rng.uniform(1.2, 2.4)
+            while a >= 1.0:
+                a -= 1.0
+                xi, zi = int(vx) % world.cols, int(vz) % world.rows
+                lgt = world.light[zi][xi]
+                self.puffs.append([
+                    vx + self.rng.uniform(-0.04, 0.04), vh,
+                    vz + self.rng.uniform(-0.04, 0.04),
+                    nx * self.rng.uniform(0.18, 0.40) + self.rng.uniform(-0.06, 0.06),
+                    self.rng.uniform(0.10, 0.28),
+                    nz * self.rng.uniform(0.18, 0.40) + self.rng.uniform(-0.06, 0.06),
+                    0.0, self.rng.uniform(1.3, 2.3),
+                    0.25 + 0.75 * lgt])
+            self.acc[i] = a
+        alive = []
+        for q in self.puffs:
+            q[0] += q[3] * dt
+            q[1] += q[4] * dt
+            q[2] += q[5] * dt
+            q[3] *= 1.0 - 0.6 * dt
+            q[5] *= 1.0 - 0.6 * dt
+            q[6] += dt
+            if q[6] < q[7]:
+                alive.append(q)
+        self.puffs = alive[-400:]
+
+    def render(self, mvp_bytes, yaw, fbo):
+        if not self.puffs:
+            return
+        rx_, rz_ = -math.sin(yaw), math.cos(yaw)
+        verts = []
+        for (px, py, pz, _, _, _, age, life, lgt) in self.puffs:
+            t = age / life
+            s = 0.09 + 0.50 * t
+            a = 0.34 * (1.0 - t) * min(1.0, age * 5.0) * lgt
+            r0x, r0z = rx_ * s, rz_ * s
+            c00 = (px - r0x, py - s, pz - r0z, 0.0, 0.0, a)
+            c10 = (px + r0x, py - s, pz + r0z, 1.0, 0.0, a)
+            c11 = (px + r0x, py + s, pz + r0z, 1.0, 1.0, a)
+            c01 = (px - r0x, py + s, pz - r0z, 0.0, 1.0, a)
+            verts += [*c00, *c10, *c11, *c00, *c11, *c01]
+        data = np.array(verts, dtype=np.float32).tobytes()
+        if len(data) > self.vbo.size:
+            data = data[:self.vbo.size]
+        self.vbo.write(data)
+        self.prog["mvp"].write(mvp_bytes)
+        self.ctx.enable(moderngl.BLEND)
+        fbo.depth_mask = False
+        self.vao.render(vertices=len(data) // 24)
+        fbo.depth_mask = True
+        self.ctx.disable(moderngl.BLEND)
 
 
 class Exposure:
@@ -1031,6 +1194,7 @@ def main(argv=None):
         world, player, rng, ahead=bool(args.record))
     cam = Camcorder(rng)
     exposure = Exposure()
+    steam = SteamFX(ctx, rng)
     clock = pygame.time.Clock()
 
     auto = not args.manual or headless
@@ -1195,6 +1359,14 @@ def main(argv=None):
             audio.set_hum_proximity(
                 bw.nearest_panel_dist(world, player), brightness)
             audio.set_space(bw.estimate_space(world, player))
+            best = None
+            for (vx, vz, vh, nx_, nz_) in getattr(world, "steam_vents", ()):
+                dxv, dzv = world.wrap_delta(player.x, player.y, vx, vz)
+                d2 = dxv * dxv + dzv * dzv
+                if best is None or d2 < best[0]:
+                    best = (d2, math.atan2(dzv, dxv))
+            audio.set_steam(math.sqrt(best[0]) if best else None,
+                            best[1] if best else 0.0, player)
 
         audio.update(dt, player)
         lights_out.update(world, player, dt, audio)
@@ -1390,6 +1562,10 @@ def main(argv=None):
             sprite_vbo.write(bb.tobytes())
             sprite_vao.render()
             ctx.disable(moderngl.BLEND)
+
+        # steam leaking off the trunk lines (Level 2)
+        steam.update(dt, world, player)
+        steam.render(mvp.tobytes(), yaw, scene_fbo)
 
         # ------- post: bloom -------
         ctx.disable(moderngl.DEPTH_TEST)

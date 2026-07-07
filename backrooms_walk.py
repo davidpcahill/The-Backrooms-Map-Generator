@@ -820,6 +820,7 @@ class World:
         bundle overhead in corridors. Decor geometry (GL renderer); safe
         from the Shift because Level 2 canonically does not shift."""
         self.pipes = {}
+        self.steam_vents = []        # (wx, wz, h, nx, nz) — GL steam FX
         if not STYLE.get("pipes"):
             return
         P = self.PIPE_PROFILES
@@ -860,6 +861,17 @@ class World:
                 runs.append(("v", 0.12, 0.12, 0.05, 7))
             if self.solid(x + 1, y) and (x * 5 + y * 11) % 19 == 0:
                 runs.append(("v", 0.88, 0.88, 0.04, 7))
+            # valve wheels and steam leaks along the north-wall trunks
+            if self.solid(x, y - 1) and racked(y * 31 + 1):
+                if (x * 11 + y * 23) % 23 == 0:
+                    runs.append(("w", 0.18, min(0.30, c - 0.14), 0.12, 9))
+                if (x * 13 + y * 29) % 31 == 0:
+                    self.steam_vents.append(
+                        (x + 0.5, y + 0.34, min(0.44, c - 0.2), 0.0, 1.0))
+            if self.solid(x, y + 1) and racked(y * 31 + 2):
+                if (x * 13 + y * 29) % 37 == 0:
+                    self.steam_vents.append(
+                        (x + 0.5, y + 0.66, min(0.44, c - 0.2), 0.0, -1.0))
             # the ceiling of a corridor is its own pipe chase
             if self.solid(x, y - 1) and self.solid(x, y + 1):
                 runs.append(("x", 0.42, c - 0.08, 0.045, 7))
@@ -2196,6 +2208,11 @@ class Audio:
         if self.growl_ch:
             self.growl_ch.set_volume(0.0, 0.0)
         self.growl_vol = (0.0, 0.0)
+        self.hiss = self._sound(self._synth_hiss())
+        self.hiss_ch = self.hiss.play(loops=-1)
+        if self.hiss_ch:
+            self.hiss_ch.set_volume(0.0, 0.0)
+        self.hiss_vol = (0.0, 0.0)
         self.hum_ch = self.hum.play(loops=-1)
         self.hum_vol = 0.10
         self.hum_target = 0.10
@@ -2550,6 +2567,39 @@ class Audio:
     def set_presence(self, dist, bearing):
         self.presence_dist = dist
         self.presence_bearing = bearing
+
+    def _synth_hiss(self):
+        """Steam escaping a joint: bright filtered noise, slightly
+        unsteady, seamless loop."""
+        n = int(SAMPLE_RATE * 1.6)
+        rng = random.Random(414)
+        out = []
+        prev = 0.0
+        for i in range(n):
+            w = rng.uniform(-1.0, 1.0)
+            hp = w - prev            # first difference: high-pass
+            prev = w
+            flut = 1.0 + 0.22 * math.sin(i / SAMPLE_RATE * math.tau * 2.3) \
+                + 0.10 * math.sin(i / SAMPLE_RATE * math.tau * 7.1)
+            out.append(hp * 0.30 * flut)
+        return out
+
+    def set_steam(self, dist, bearing, p):
+        """Positional steam hiss from the nearest leaking joint."""
+        if not (self.ok and self.hiss_ch):
+            return
+        if dist is None or dist > 6.0:
+            target = (0.0, 0.0)
+        else:
+            vol = min(0.22, 0.55 / max(dist, 1.2))
+            rel = bearing - p.angle
+            r = 0.5 * (1.0 + math.sin(rel))
+            target = (vol * (1.0 - r), vol * r)
+        cur = self.hiss_vol
+        k = 0.12
+        self.hiss_vol = (cur[0] + (target[0] - cur[0]) * k,
+                         cur[1] + (target[1] - cur[1]) * k)
+        self.hiss_ch.set_volume(*self.hiss_vol)
 
     def set_growl(self, dist, bearing, p):
         """Continuous low growl, audible only close, panned to it."""
@@ -3361,6 +3411,14 @@ def main(argv=None):
             audio.set_hum_proximity(
                 nearest_panel_dist(world, player), brightness)
             audio.set_space(estimate_space(world, player))
+            best = None
+            for (vx, vz, vh, nx_, nz_) in getattr(world, "steam_vents", ()):
+                dxv, dzv = world.wrap_delta(player.x, player.y, vx, vz)
+                d2 = dxv * dxv + dzv * dzv
+                if best is None or d2 < best[0]:
+                    best = (d2, math.atan2(dzv, dxv))
+            audio.set_steam(math.sqrt(best[0]) if best else None,
+                            best[1] if best else 0.0, player)
 
         audio.update(dt, player)
         lights_out.update(world, player, dt, audio)
