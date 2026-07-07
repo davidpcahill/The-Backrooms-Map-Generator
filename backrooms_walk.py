@@ -837,11 +837,18 @@ class World:
                 continue
             runs = []
 
+            # Trunk material per wall line: a mix of gunmetal steel,
+            # old green paint, red-oxide, and the kit's rusty/bare
+            # metals. No two adjacent lines need to match; no white.
+            TRUNK_MATS = (7, 8, 8, 9, 7, 10, 8)
+
             def rack(axis, key, blk, mirror):
                 out = []
                 if racked(key):
-                    out += [(axis, 0.18, 0.30, 0.12, 8),
-                            (axis, 0.16, 0.55, 0.08, 8)]
+                    tm = TRUNK_MATS[key % 7]
+                    tm2 = TRUNK_MATS[(key // 7 + 3) % 7]
+                    out += [(axis, 0.18, 0.30, 0.12, tm),
+                            (axis, 0.16, 0.55, 0.08, tm2)]
                 out += [(axis, o, h, r, m) for (o, h, r, m) in prof(blk)]
                 if mirror:
                     out = [(a, 1.0 - o, h, r, m) for (a, o, h, r, m) in out]
@@ -861,13 +868,23 @@ class World:
                 runs.append(("v", 0.12, 0.12, 0.05, 7))
             if self.solid(x + 1, y) and (x * 5 + y * 11) % 19 == 0:
                 runs.append(("v", 0.88, 0.88, 0.04, 7))
-            # valve wheels and steam leaks along the north-wall trunks
+            # valve wheels, flanged couplings, junctions, steam leaks
             if self.solid(x, y - 1) and racked(y * 31 + 1):
+                th = min(0.30, c - 0.14)
                 if (x * 11 + y * 23) % 23 == 0:
-                    runs.append(("w", 0.18, min(0.30, c - 0.14), 0.12, 9))
+                    runs.append(("w", 0.18, th, 0.12, 9))
+                if (x * 3 + y) % 5 == 0:       # kit coupling on the trunk
+                    runs.append(("k", 0, 0.5, th, 0.18, "x", 0.30, 7))
+                if (x * 7 + y * 3) % 13 == 0:  # kit 3-way junction
+                    runs.append(("k", 2, 0.5, min(0.55, c - 0.12), 0.16,
+                                 "x", 0.30, 9))
                 if (x * 13 + y * 29) % 31 == 0:
                     self.steam_vents.append(
                         (x + 0.5, y + 0.34, min(0.44, c - 0.2), 0.0, 1.0))
+            if self.solid(x - 1, y) and racked(x * 17 + 1):
+                if (x * 5 + y * 7) % 11 == 0:  # coupling on west-wall trunks
+                    runs.append(("k", 0, 0.18, min(0.30, c - 0.14), 0.5,
+                                 "y", 0.30, 7))
             if self.solid(x, y + 1) and racked(y * 31 + 2):
                 if (x * 13 + y * 29) % 37 == 0:
                     self.steam_vents.append(

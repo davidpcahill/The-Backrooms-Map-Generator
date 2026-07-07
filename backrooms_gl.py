@@ -417,35 +417,34 @@ def build_textures(ctx, pygame_module):
     door.fill((200, 180, 120), (size - 34, 118, 10, 10))   # knob
     surfs.append(door)
 
-    # 7: pipe metal — dark verdigris steel, flange rings, rust streaks.
+    # 7: gunmetal steel — bolted seam rings, oil sheen, sparse rust.
     # u runs ALONG the pipe, so the vertical stripes become rings.
-    pipe_c = (74, 78, 72)
+    pipe_c = (82, 84, 88)
     pipe = new(pipe_c)
-    speckle(pipe, pipe_c, 1400, 4, 12, 2)
+    speckle(pipe, pipe_c, 1600, 4, 12, 2)
     for x0 in range(0, size, 64):
-        pipe.fill((56, 58, 54), (x0, 0, 7, size))
-        pipe.fill((96, 100, 92), (x0 + 7, 0, 2, size))
-    for _ in range(26):
+        pipe.fill((58, 60, 64), (x0, 0, 7, size))
+        for by_ in range(6, size, 24):            # bolt heads on the seam
+            pipe.fill((116, 118, 122), (x0 + 2, by_, 3, 3))
+    for _ in range(18):
         x = rng.randrange(size)
         y0 = rng.randrange(size - 40)
-        pipe.fill((92, 64, 44), (x, y0, rng.randint(1, 2), rng.randint(12, 40)))
+        pipe.fill((96, 70, 48), (x, y0, rng.randint(1, 2), rng.randint(10, 34)))
     surfs.append(pipe)
 
-    # 8: wrapped insulation — dirty pale canvas over the fat trunk lines
-    # (the Level 2 photo signature). Wrap seams ring the run; grime
-    # blotches where hands and years have been.
-    ins_c = (172, 162, 140)
-    ins = new(ins_c)
-    speckle(ins, ins_c, 2400, 3, 14, 3)
+    # 8: industrial green — old painted steel, paint flaking to dark
+    # metal, faint band seams. (Replaces the white canvas wrap: too HVAC.)
+    grn_c = (58, 72, 58)
+    grn = new(grn_c)
+    speckle(grn, grn_c, 2000, 4, 16, 2)
     for x0 in range(0, size, 40):
-        ins.fill(tuple(max(0, c - 24) for c in ins_c), (x0, 0, 3, size))
-    for _ in range(10):
-        bx_ = rng.randrange(size)
-        by_ = rng.randrange(size)
-        ins.fill(tuple(max(0, c - rng.randint(14, 30)) for c in ins_c),
-                 (bx_, by_, min(rng.randint(20, 70), size - bx_),
-                  min(rng.randint(8, 24), size - by_)))
-    surfs.append(ins)
+        grn.fill(tuple(max(0, c - 18) for c in grn_c), (x0, 0, 3, size))
+    for _ in range(60):                            # flaked chips
+        fx_ = rng.randrange(size)
+        fy_ = rng.randrange(size)
+        grn.fill((44, 42, 40) if rng.random() < 0.7 else (92, 104, 90),
+                 (fx_, fy_, rng.randint(2, 8), rng.randint(1, 5)))
+    surfs.append(grn)
 
     # 9: valve-wheel red — chipped red-oxide paint over iron
     val_c = (126, 42, 34)
@@ -457,6 +456,20 @@ def build_textures(ctx, pygame_module):
         valve.fill((52, 48, 46), (vx_, vy_, rng.randint(2, 9), rng.randint(2, 7)))
     surfs.append(valve)
 
+    # 10/11: albedos from the CC-BY "Modular Industrial Pipes Kit"
+    # (opengameart.org — see CREDITS.md): rusty and bare metal. Used on
+    # kit connector instances and as tiled variety on trunk runs.
+    for tex_name in ("RustyMetal_256", "BareMetal_256"):
+        try:
+            img = pygame_module.image.load(
+                bw.resource_path(f"assets/pipekit/{tex_name}.png"))
+            img = pygame_module.transform.smoothscale(img, (size, size))
+            s = pygame_module.Surface((size, size))
+            s.blit(img, (0, 0))
+            surfs.append(s)
+        except Exception:
+            surfs.append(new((90, 88, 86)))    # fallback: plain steel
+
     data = b"".join(
         pygame_module.image.tobytes(s, "RGBA") for s in surfs)
     tex = ctx.texture_array((size, size, len(surfs)), 4, data)
@@ -467,11 +480,81 @@ def build_textures(ctx, pygame_module):
 
 
 # ---------------------------------------------------------------------------
+# Pipe-kit connector models (CC-BY, see CREDITS.md)
+# ---------------------------------------------------------------------------
+
+PIPE_MODELS = None
+
+
+def _load_pipekit_models():
+    """Parse the kit connector OBJs into canonical triangle soup: bbox
+    centered, longest axis rotated onto +X, scaled so max dimension is
+    1.0. Returns {index: [(px,py,pz,u,v,nx,ny,nz), ...]}."""
+    names = ("PipeKit_Connector_Straight", "PipeKit_Connector_2WayCorner",
+             "PipeKit_Connector_3Way", "PipeKit_Connector_4Way")
+    out = {}
+    for idx, name in enumerate(names):
+        try:
+            with open(bw.resource_path(f"assets/pipekit/{name}.obj")) as fh:
+                lines = fh.readlines()
+        except OSError:
+            continue
+        vs, vts, vns, tris = [], [], [], []
+        for ln in lines:
+            p = ln.split()
+            if not p:
+                continue
+            if p[0] == "v":
+                vs.append((float(p[1]), float(p[2]), float(p[3])))
+            elif p[0] == "vt":
+                vts.append((float(p[1]), float(p[2])))
+            elif p[0] == "vn":
+                vns.append((float(p[1]), float(p[2]), float(p[3])))
+            elif p[0] == "f":
+                corner = []
+                for w in p[1:]:
+                    a = w.split("/")
+                    corner.append((int(a[0]) - 1,
+                                   int(a[1]) - 1 if len(a) > 1 and a[1] else 0,
+                                   int(a[2]) - 1 if len(a) > 2 and a[2] else 0))
+                for i in range(1, len(corner) - 1):
+                    tris.append((corner[0], corner[i], corner[i + 1]))
+        if not tris:
+            continue
+        lo = [min(v[i] for v in vs) for i in range(3)]
+        hi = [max(v[i] for v in vs) for i in range(3)]
+        ctr = [(lo[i] + hi[i]) / 2 for i in range(3)]
+        dims = [hi[i] - lo[i] for i in range(3)]
+        ax = dims.index(max(dims))
+        s = 1.0 / (max(dims) or 1.0)
+
+        def xf(v, is_n=False):
+            p3 = v if is_n else [(v[i] - ctr[i]) * s for i in range(3)]
+            if ax == 1:                      # Y longest: rotate about Z
+                p3 = (p3[1], -p3[0], p3[2])
+            elif ax == 2:                    # Z longest: rotate about Y
+                p3 = (p3[2], p3[1], -p3[0])
+            return p3
+        soup = []
+        for tri in tris:
+            for (vi, ti, ni) in tri:
+                px, py, pz = xf(vs[vi])
+                nx_, ny_, nz_ = xf(vns[ni] if vns else (0, 1, 0), is_n=True)
+                u, v = vts[ti] if vts else (0.0, 0.0)
+                soup.append((px, py, pz, u, v, nx_, ny_, nz_))
+        out[idx] = soup
+    return out
+
+
+# ---------------------------------------------------------------------------
 # World mesh (chunked)
 # ---------------------------------------------------------------------------
 
 class WorldMesh:
     def __init__(self, ctx, prog, world: bw.World):
+        global PIPE_MODELS
+        if PIPE_MODELS is None:
+            PIPE_MODELS = _load_pipekit_models()
         self.ctx = ctx
         self.prog = prog
         self.world = world
@@ -632,6 +715,21 @@ class WorldMesh:
                 tube(((x + ox, f - 0.01, y + oz), (x + ox, c + 0.01, y + oz)),
                      r, m, n=8, u0=f)
                 return
+            if kind == "k":
+                # a kit connector instanced on a run (flanged coupling,
+                # 3-way...) — canonical model: pipe axis along +X
+                mid, ox, hh, oz, axis_c, scl, m = args_
+                model = PIPE_MODELS.get(mid) if PIPE_MODELS else None
+                if not model:
+                    return
+                bx0, by0, bz0 = x + ox, hh, y + oz
+                for (px, py, pz, u, v, nx_, ny_, nz_) in model:
+                    if axis_c == "y":        # rotate +90 about world Y
+                        px, pz = -pz, px
+                        nx_, nz_ = -nz_, nx_
+                    emit((bx0 + px * scl, by0 + py * scl, bz0 + pz * scl,
+                          u, v, nx_, ny_, nz_, m, 1.0))
+                return
             if kind == "w":
                 # a valve wheel on the trunk: rim torus + spokes + axle
                 off, hh, rt, m = args_
@@ -672,6 +770,16 @@ class WorldMesh:
             rb = max(0.03, min(0.1, gap * 0.7, r * 1.4))
             tube((p0, p1), r, m, n=10 if r >= 0.08 else 8,
                  u0=(x if kind == "x" else y))
+            # mounting brackets tie the rack to the wall every other cell
+            if r >= 0.08 and (x + y) % 2 == 0 and not (0.35 < off < 0.65):
+                if kind == "x":
+                    wz = y + (0.0 if off < 0.5 else 1.0)
+                    tube(((x + 0.5, hh, wz), (x + 0.5, hh, y + off)),
+                         0.018, 7, n=6)
+                else:
+                    wx = x + (0.0 if off < 0.5 else 1.0)
+                    tube(((wx, hh, y + 0.5), (x + off, hh, y + 0.5)),
+                         0.018, 7, n=6)
             for nb, end, da in ((nb0, p0, d_al[0]), (nb1, p1, d_al[1])):
                 if run_key not in pipes_map.get(nb, ()):
                     tube(bend_pts(end, da, d_wall, rb, gap), r, m,

@@ -14,6 +14,16 @@ posed and rendered in Blender) from the rigged model:
 The model file itself is not distributed in this repository — only the
 baked silhouette sprites.
 
+## Pipe-kit connectors (Level 2)
+
+`assets/pipekit/` contains four connector meshes (converted FBX → OBJ)
+and two downscaled base-color textures from:
+
+- **"Modular Industrial Pipes Kit"** —
+  <https://opengameart.org/content/modular-industrial-pipes-kit>
+  Used under **CC-BY** as stated on the page; all credit to its author
+  (see the OpenGameArt page and the ArtStation link there). Thank you!
+
 ## Everything else
 
 - Concept/lore: the Backrooms community (wikis linked in the README) and
