@@ -123,6 +123,7 @@ STYLES = {
         # soffits, pillars. Those work.
         tall=(3, 5), tall_h=(1.8, 3.4), crawl=(2, 4), sunken=(0, 0),
         pits=(0, 0), blackouts=(1, 2), raked=(0, 0), ramp_chance=0.5,
+        mezzanines=(1, 2),
         panel=lambda x, y: x % 2 == 1 and y % 3 == 1, panel_prob=0.7,
         # denser maze: lower fill + higher merge_stop = more corridors,
         # more junctions, more dead ends to back out of
@@ -143,6 +144,7 @@ STYLES = {
         panel=lambda x, y: y % 4 == 2, panel_prob=0.55,
         gen=dict(rooms=3, pillar_rooms=6, poly_rooms=1),
         closed_rooms=(2, 4),
+        mezzanines=(1, 1),
         drips=True,
     ),
 }
@@ -411,6 +413,7 @@ class World:
         self._add_sunken_wings(rng)
         self._add_raked_floors(rng)
         self._add_pitfalls(rng)
+        self._add_mezzanines(rng)
         self._add_blackouts(rng)
         self._add_closed_rooms(rng)
         self._add_doorways(rng)
@@ -639,11 +642,57 @@ class World:
             for x, y in self._blob(rng, rng.randint(100, 300)):
                 self.light[y][x] = 0.3
 
+    def _add_mezzanines(self, rng):
+        """Real verticality, designed: a big open area drops a full lower
+        floor (-2.0), reached by straight staircases along its edges. The
+        upper rim is an exposed ledge with NO rail — walking off it is a
+        lethal fall (impact-velocity death), the stairs are the safe way.
+        Only possible now that the depth test actually works."""
+        lo, hi = STYLE.get("mezzanines", (0, 0))
+        nbrs8 = tuple((dx, dy) for dx in (-1, 0, 1) for dy in (-1, 0, 1)
+                      if dx or dy)
+        for _ in range(rng.randint(lo, hi)):
+            for _try in range(12):
+                blob = self._fill_holes(
+                    self._blob(rng, rng.randint(300, 550), rooms_only=True))
+                interior = {c for c in blob
+                            if all((c[0] + dx, c[1] + dy) in blob
+                                   for dx, dy in nbrs8)}
+                if len(interior) < 70:
+                    continue
+                for x, y in interior:
+                    if self.floor[y][x] == 0.0 and self.ceil[y][x] > 0.9:
+                        self.floor[y][x] = -2.0
+                # staircases: straight 8-step runs carved into the pit,
+                # entered from the rim. Try one from the west, one east.
+                built = 0
+                ys = sorted({c[1] for c in interior})
+                for y in ys[len(ys) // 3::max(1, len(ys) // 3)]:
+                    row = sorted(x for (x, yy) in interior if yy == y)
+                    if len(row) < 10:
+                        continue
+                    for xs, step in ((row[0], 1), (row[-1], -1)):
+                        entry = (xs - step, y)
+                        if (entry in blob and entry not in interior
+                                and built < 2):
+                            ok_run = all((xs + step * i, y) in interior
+                                         for i in range(8))
+                            if not ok_run:
+                                continue
+                            for i in range(8):
+                                x_ = xs + step * i
+                                self.floor[y][x_] = max(-2.0, -0.25 * (i + 1))
+                            built += 1
+                if built:
+                    break
+
     def _add_closed_rooms(self, rng):
         """Actual ROOMS: walled rectangles stamped into open areas, one
         doorway with a real door panel. Some are dark inside. The door
         opens (creaks) when someone approaches; it can be slammed open."""
         self.doors = {}
+        self.room_walls = set()     # shielded from the Peripheral Shift —
+        # a carved-out ring wall leaves an unframed door hanging in space
         lo, hi = STYLE.get("closed_rooms", (0, 0))
         for _ in range(rng.randint(lo, hi)):
             for _try in range(40):
@@ -661,9 +710,13 @@ class World:
                 for x in range(x0, x0 + w):
                     self.ceil[y0][x] = 0.0
                     self.ceil[y0 + h - 1][x] = 0.0
+                    self.room_walls.add((x, y0))
+                    self.room_walls.add((x, y0 + h - 1))
                 for y in range(y0, y0 + h):
                     self.ceil[y][x0] = 0.0
                     self.ceil[y][x0 + w - 1] = 0.0
+                    self.room_walls.add((x0, y))
+                    self.room_walls.add((x0 + w - 1, y))
                 # one door, middle of a random side, lintel above it
                 side = rng.randrange(4)
                 if side == 0:
@@ -833,8 +886,9 @@ class World:
         else:
             return changed
         if rng.random() < 0.7:
+            room_walls = getattr(self, "room_walls", set())
             for _ in range(rng.randint(20, 70)):
-                if self.solid(x, y):
+                if self.solid(x, y) and (x, y) not in room_walls:
                     for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
                         f, c, l, _ = self.cell(x + dx, y + dy)
                         if f < c:
@@ -954,18 +1008,20 @@ class Player:
             self.exertion = max(0.0, self.exertion - dt / 11.0)
 
         # Vertical: slopes are followed directly, gravity handles drops.
+        # Death is IMPACT VELOCITY, not depth — stairs down to the lower
+        # floor are safe; walking off the ledge above it is not.
         f = world.floor_at(self.x, self.y)
         if self.z > f + 0.03:
             self.vz -= GRAVITY * dt
             self.z = max(f, self.z + self.vz * dt)
             if self.z <= f:
+                if self.vz < -5.4:      # ~1.6+ units of free fall
+                    self.fell = True
                 self.vz = 0.0
         elif self.z < f:
             self.z = min(f, self.z + 5.0 * dt)
         else:
             self.z = f
-        if self.z <= FALL_LIMIT:
-            self.fell = True
 
         # Crouching is deliberate: over a second to fold down, slower to
         # trust standing back up — unless he's running for it.
