@@ -383,6 +383,23 @@ def build_textures(ctx, pygame_module):
     lower.fill(tuple(min(255, c + 26) for c in S["wall_trim"]), (0, 0, size, 2))
     surfs.append(lower)
 
+    # 6: a wooden door — frame, two recessed panels, a knob
+    wood = (118, 84, 52)
+    door = new(wood)
+    speckle(door, wood, 1800, 4, 14, 4)
+    dark = tuple(max(0, c - 34) for c in wood)
+    door.fill(dark, (0, 0, size, 10))
+    door.fill(dark, (0, size - 10, size, 10))
+    door.fill(dark, (0, 0, 10, size))
+    door.fill(dark, (size - 10, 0, 10, size))
+    for py_, ph_ in ((34, 82), (140, 82)):
+        door.fill(dark, (40, py_, size - 80, 6))
+        door.fill(dark, (40, py_ + ph_, size - 80, 6))
+        door.fill(dark, (40, py_, 6, ph_))
+        door.fill(dark, (size - 46, py_, 6, ph_))
+    door.fill((200, 180, 120), (size - 34, 118, 10, 10))   # knob
+    surfs.append(door)
+
     data = b"".join(
         pygame_module.image.tobytes(s, "RGBA") for s in surfs)
     tex = ctx.texture_array((size, size, len(surfs)), 4, data)
@@ -845,6 +862,35 @@ def main(argv=None):
     sprite_vbo = ctx.buffer(reserve=6 * 5 * 4)
     sprite_vao = ctx.vertex_array(
         sprite_prog, [(sprite_vbo, "3f 2f", "in_pos", "in_uv")])
+    doors_vbo = ctx.buffer(reserve=65536)
+    doors_vao = ctx.vertex_array(
+        scene_prog, [(doors_vbo, "3f 2f 3f 1f 1f",
+                      "in_pos", "in_uv", "in_norm", "in_mat", "in_shade")])
+
+    def build_door_verts():
+        """Door panels as dynamic geometry: hinged at one jamb, swinging
+        by their anim state. Same vertex layout as the world mesh."""
+        verts = []
+        for (dx_, dy_), door in world.doors.items():
+            if math.hypot(*world.wrap_delta(player.x, player.y,
+                                            dx_ + 0.5, dy_ + 0.5)) > 26:
+                continue
+            a = door["anim"] * 1.85 if door["open"] else 0.0
+            if door["axis"] == "x":
+                hx, hz = dx_ + 0.05, dy_ + 0.5
+                ux, uz = math.cos(a), math.sin(a)
+            else:
+                hx, hz = dx_ + 0.5, dy_ + 0.05
+                ux, uz = math.sin(a), math.cos(a)
+            ex, ez = hx + ux * 0.9, hz + uz * 0.9
+            nx_, nz_ = -uz, ux
+            for (x0, z0, u0), (x1, z1, u1) in (((hx, hz, 0.0), (ex, ez, 1.0)),):
+                a_ = (x0, 0.0, z0, u0, 1.0, nx_, 0.0, nz_, 6.0, 1.0)
+                b_ = (x1, 0.0, z1, u1, 1.0, nx_, 0.0, nz_, 6.0, 1.0)
+                c_ = (x1, 0.8, z1, u1, 0.0, nx_, 0.0, nz_, 6.0, 1.0)
+                d_ = (x0, 0.8, z0, u0, 0.0, nx_, 0.0, nz_, 6.0, 1.0)
+                verts += [*a_, *b_, *c_, *a_, *c_, *d_]
+        return np.array(verts, dtype=np.float32) if verts else None
 
     audio = bw.Audio(pygame, rng, enabled=not (args.mute or headless))
     walker = bw.AutoWalker(rng)
@@ -1001,6 +1047,13 @@ def main(argv=None):
                 if changed:
                     mesh.rebuild_cells(changed)
 
+        # doors: open for whoever walks at them
+        agents = [(player.x, player.y, "player")]
+        if presence is not None:
+            agents.append((presence.x, presence.y, "presence"))
+        for kind, dx_, dy_ in world.update_doors(dt, agents):
+            audio.play_door(kind, dx_, dy_, player)
+
         # hum follows the nearest live panel; echoes follow the room size
         hum_scan -= dt
         if audio.ok and hum_scan <= 0:
@@ -1083,6 +1136,12 @@ def main(argv=None):
         scene_prog["tex"].value = 0
         scene_prog["lightgrid"].value = 1
         mesh.render()
+
+        # door panels: hinged, swinging, drawn with the world's shader
+        dverts = build_door_verts()
+        if dverts is not None:
+            doors_vbo.write(dverts.tobytes())
+            doors_vao.render(vertices=len(dverts) // 10)
 
         # the Howler billboard + blob shadow
         if presence is not None and sprite is not None:

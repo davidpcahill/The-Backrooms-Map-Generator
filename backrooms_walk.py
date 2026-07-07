@@ -124,7 +124,11 @@ STYLES = {
         tall=(3, 5), tall_h=(1.8, 3.4), crawl=(2, 4), sunken=(0, 0),
         pits=(0, 0), blackouts=(1, 2), raked=(0, 0), ramp_chance=0.5,
         panel=lambda x, y: x % 2 == 1 and y % 3 == 1, panel_prob=0.7,
-        gen=dict(rooms=4, pillar_rooms=3, poly_rooms=3),
+        # denser maze: lower fill + higher merge_stop = more corridors,
+        # more junctions, more dead ends to back out of
+        gen=dict(rooms=3, pillar_rooms=3, poly_rooms=2,
+                 fill=0.48, merge_stop=0.65),
+        closed_rooms=(5, 9),
         drips=False,
     ),
     1: dict(
@@ -138,6 +142,7 @@ STYLES = {
         pits=(0, 0), blackouts=(2, 3), raked=(2, 3), ramp_chance=1.0,
         panel=lambda x, y: y % 4 == 2, panel_prob=0.55,
         gen=dict(rooms=3, pillar_rooms=6, poly_rooms=1),
+        closed_rooms=(2, 4),
         drips=True,
     ),
 }
@@ -407,6 +412,7 @@ class World:
         self._add_raked_floors(rng)
         self._add_pitfalls(rng)
         self._add_blackouts(rng)
+        self._add_closed_rooms(rng)
         self._add_doorways(rng)
         self._place_panels(rng)
 
@@ -633,6 +639,92 @@ class World:
             for x, y in self._blob(rng, rng.randint(100, 300)):
                 self.light[y][x] = 0.3
 
+    def _add_closed_rooms(self, rng):
+        """Actual ROOMS: walled rectangles stamped into open areas, one
+        doorway with a real door panel. Some are dark inside. The door
+        opens (creaks) when someone approaches; it can be slammed open."""
+        self.doors = {}
+        lo, hi = STYLE.get("closed_rooms", (0, 0))
+        for _ in range(rng.randint(lo, hi)):
+            for _try in range(40):
+                w = rng.randint(5, 9)
+                h = rng.randint(4, 7)
+                x0 = rng.randint(2, self.cols - w - 3)
+                y0 = rng.randint(2, self.rows - h - 3)
+                ok = all(
+                    self.floor[y][x] == 0.0 and 0.9 < self.ceil[y][x] <= 1.3
+                    for y in range(y0 - 1, y0 + h + 1)
+                    for x in range(x0 - 1, x0 + w + 1))
+                if not ok:
+                    continue
+                # walls on the ring, interior stays open
+                for x in range(x0, x0 + w):
+                    self.ceil[y0][x] = 0.0
+                    self.ceil[y0 + h - 1][x] = 0.0
+                for y in range(y0, y0 + h):
+                    self.ceil[y][x0] = 0.0
+                    self.ceil[y][x0 + w - 1] = 0.0
+                # one door, middle of a random side, lintel above it
+                side = rng.randrange(4)
+                if side == 0:
+                    dx_, dy_ = x0 + w // 2, y0
+                    axis = "x"
+                elif side == 1:
+                    dx_, dy_ = x0 + w // 2, y0 + h - 1
+                    axis = "x"
+                elif side == 2:
+                    dx_, dy_ = x0, y0 + h // 2
+                    axis = "z"
+                else:
+                    dx_, dy_ = x0 + w - 1, y0 + h // 2
+                    axis = "z"
+                self.ceil[dy_][dx_] = 0.82
+                self.floor[dy_][dx_] = 0.0
+                self.doors[(dx_, dy_)] = {
+                    "open": False, "axis": axis, "anim": 0.0, "timer": 0.0}
+                # some rooms are dark. of course some rooms are dark.
+                if rng.random() < 0.45:
+                    for y in range(y0 + 1, y0 + h - 1):
+                        for x in range(x0 + 1, x0 + w - 1):
+                            self.light[y][x] = 0.25
+                break
+
+    def update_doors(self, dt, agents):
+        """Doors open for whoever walks at them. Returns sound events:
+        (kind, x, y) where kind is 'creak' (careful) or 'slam' (it does
+        not do careful). Doors drift shut a while after everyone leaves."""
+        events = []
+        for (dx_, dy_), door in self.doors.items():
+            cx, cy = dx_ + 0.5, dy_ + 0.5
+            nearest = None
+            opener = None
+            for (ax, ay, kind) in agents:
+                d = math.hypot(*self.wrap_delta(ax, ay, cx, cy))
+                if nearest is None or d < nearest:
+                    nearest = d
+                    opener = kind
+            if not door["open"]:
+                if nearest is not None and nearest < 1.2:
+                    door["open"] = True
+                    door["timer"] = 0.0
+                    events.append((
+                        "slam" if opener == "presence" else "creak", cx, cy))
+            else:
+                door["anim"] = min(1.0, door["anim"]
+                                   + dt * (5.0 if opener == "presence" else 2.2))
+                if nearest is None or nearest > 2.0:
+                    door["timer"] += dt
+                    if door["timer"] > self.rng_doors_close():
+                        door["open"] = False
+                        door["anim"] = 0.0  # will re-open on next approach
+                else:
+                    door["timer"] = 0.0
+        return events
+
+    @staticmethod
+    def rng_doors_close():
+        return 7.0
+
     def _add_doorways(self, rng):
         """Punch door-height lintels into wall gaps so the segmented rooms
         read as rooms with doorways, not just missing wall."""
@@ -698,6 +790,9 @@ class World:
     def passable(self, from_z: float, x: int, y: int, max_drop: float | None) -> bool:
         if self.bounded and not (0 <= x < self.cols and 0 <= y < self.rows):
             return False
+        door = self.doors.get((x % self.cols, y % self.rows)) if hasattr(self, "doors") else None
+        if door is not None and not door["open"]:
+            return False        # a closed door is a wall until it isn't
         f, c, _, _ = self.cell(x, y)
         if f >= c:
             return False
@@ -759,7 +854,8 @@ class World:
                 wx = (x + rng.randint(-4, 4)) % self.cols
                 wy = (y + rng.randint(-4, 4)) % self.rows
                 if (math.hypot(*self.wrap_delta(px, py, wx, wy)) > SHIFT_SAFE_RADIUS
-                        and self.floor[wy][wx] == 0.0):
+                        and self.floor[wy][wx] == 0.0
+                        and (wx, wy) not in getattr(self, "doors", {})):
                     self.ceil[wy][wx] = 0.0
                     changed.append((wx, wy))
         return changed
@@ -985,10 +1081,10 @@ class AutoWalker:
             self.pause = 0.0
             self.repath_timer = 0.0     # drop everything, plan an escape
 
-        # Getting his bearings: now and then, when things are calm, he
-        # stops and sweeps a look around — left, then right — before
-        # walking on.
-        if not self.panic and p.fear < 0.3 and self.pause <= 0 and self.look <= 0:
+        # Getting his bearings: now and then, when things are CALM — never
+        # while anything is wrong — he stops and sweeps a look around.
+        if (not self.panic and p.fear < 0.12 and self.heard_t <= 0
+                and self.pause <= 0 and self.look <= 0):
             self.scan_cd -= dt
             if self.scan_cd <= 0:
                 self.scan_cd = self.rng.uniform(20.0, 45.0)
@@ -1021,12 +1117,12 @@ class AutoWalker:
         self.look_cd -= dt
         if self.look <= 0 and p.presence_bearing is not None and self.look_cd <= 0:
             if self.panic:
-                self.look = 1.4                  # total budget
-                self.look_dwell = 0.35
+                self.look = 0.9                  # quick, snatched glance
+                self.look_dwell = 0.28
                 self.look_cd = self.rng.uniform(3.5, 7.0)
             elif p.presence_heard and not p.presence_seen:
-                self.look = 1.8
-                self.look_dwell = 0.5
+                self.look = 1.6
+                self.look_dwell = 0.45
                 self.look_cd = self.rng.uniform(6.0, 12.0)
         if self.look > 0 and p.presence_bearing is not None:
             self.look -= dt
@@ -1037,16 +1133,23 @@ class AutoWalker:
                 self.look_dwell -= dt
                 if self.look_dwell <= 0:
                     self.look = 0.0
-            if self.panic and self.path and self.idx < len(self.path):
-                # keep running the route while the head is turned
+            # HE DOES NOT STOP. Running: full flight while the head is
+            # turned. Walking: keeps moving, just slower, while checking.
+            # Only a CLOSE unseen sound roots him to the spot.
+            if self.path and self.idx < len(self.path):
                 cx, cy = self.path[self.idx]
                 dx, dy = world.wrap_delta(p.x, p.y, cx + 0.5, cy + 0.5)
                 d = math.hypot(dx, dy) or 1.0
-                speed = MOVE_SPEED * 1.35
+                if self.panic:
+                    speed = MOVE_SPEED * 1.5
+                elif p.presence_dist is not None and p.presence_dist < 6.0:
+                    speed = 0.0                  # it's RIGHT there. freeze.
+                else:
+                    speed = MOVE_SPEED * 0.55
                 p.want_vx = dx / d * speed
                 p.want_vy = dy / d * speed
             else:
-                p.want_vx = p.want_vy = 0.0      # stop. listen. look.
+                p.want_vx = p.want_vy = 0.0
             if self.look > 0:
                 return
 
@@ -1112,25 +1215,27 @@ class AutoWalker:
 
         if self.idx >= len(self.path) - 1 and dist < 0.5:
             self.path = []
-            if not self.panic and p.fear < 0.3 and self.rng.random() < 0.5:
+            if not self.panic and p.fear < 0.12 and self.rng.random() < 0.5:
                 self.pause = self.pause_total = self.rng.uniform(0.7, 1.8)
                 self.pause_turn = self.rng.choice((-1, 1)) * TURN_SPEED * 0.35
             return
 
         target = math.atan2(dy, dx)
         diff = (target - p.angle + math.pi) % math.tau - math.pi
-        turn = TURN_SPEED * (1.6 if self.panic else 1.0)
+        turn = TURN_SPEED * (1.8 if self.panic else 1.0)
         p.angle += max(-turn * dt, min(turn * dt, diff))
 
         alignment = math.cos(diff)
         if self.panic:
             speed = MOVE_SPEED * 1.45           # flat-out run
+            # a fleeing man corners at speed; he does not stop to pivot
+            speed *= max(0.35, alignment)
         else:
             # Calm is a stroll; unease quickens the step.
             speed = MOVE_SPEED * (0.78 + 0.35 * p.fear)
+            speed *= max(0.0, alignment) if abs(diff) < 1.5 else 0.0
         if p.crouched():
             speed = min(speed, MOVE_SPEED * 0.55)
-        speed *= max(0.0, alignment) if abs(diff) < 1.5 else 0.0
         p.want_vx = math.cos(p.angle) * speed
         p.want_vy = math.sin(p.angle) * speed
 
@@ -1240,6 +1345,12 @@ class Presence:
         # Sightings feed it. Crowding it feeds it faster.
         self.tension = 0.75 if ahead else 0.0
         self.seen_prev = False
+        # The director: aggression ramps with time since the last kill,
+        # scaled by a per-cycle mood roll — some cycles it toys with him
+        # for five minutes, some it comes straight in. Tuned by simulated
+        # time-to-death runs, not vibes.
+        self.alive_t = 0.0
+        self.mood = rng.uniform(0.7, 1.45)
         self.x, self.y = self._pick_spot(world, p, ahead)
 
     def _pick_spot(self, world, p, ahead):
@@ -1263,6 +1374,9 @@ class Presence:
         self.x, self.y = self._pick_spot(world, p, ahead=False)
         self.path = []
         self.lost = 0.0
+        # a kill (or an escape) resets the director's clock and mood
+        self.alive_t = 0.0
+        self.mood = self.rng.uniform(0.7, 1.45)
 
     def _plan(self, world: World, p: Player):
         start = (int(self.x) % world.cols, int(self.y) % world.rows)
@@ -1346,6 +1460,9 @@ class Presence:
     def update(self, world: World, p: Player, dt, audio) -> bool:
         """Perceive, decide, move. Returns True the moment it reaches him."""
         self.scream_cd = max(0.0, self.scream_cd - dt)
+        self.alive_t += dt
+        # 0 for the first ~40s, full hunger by ~3.5 minutes (mood-scaled)
+        agg = max(0.0, min(1.0, (self.alive_t * self.mood - 40.0) / 170.0))
 
         # --- Perception (his, of it). Not radar: seeing it requires line
         # of sight, facing it, AND enough light where it stands. Since it
@@ -1396,7 +1513,7 @@ class Presence:
         if seen and not self.seen_prev:
             self.tension = min(1.0, self.tension + 0.10)
         self.seen_prev = seen
-        self.tension = min(1.0, self.tension + dt / 130.0)
+        self.tension = min(1.0, self.tension + dt * (1.0 + 2.0 * agg) / 130.0)
         shy = self.tension < 0.5
         if shy and dist < 5.0:
             self.tension = min(1.0, self.tension + dt / 12.0)
@@ -1421,9 +1538,10 @@ class Presence:
                     self.wave_t = 0.0
         elif self.state == "hunt":
             # Hunting but he broke away: without line of sight long
-            # enough, it loses the thread and goes back to stalking.
+            # enough, it loses the thread — though a hungry one keeps
+            # the thread much longer.
             self.blind_t = self.blind_t + dt if not los else 0.0
-            if self.blind_t > 6.0 or dist > 16.0:
+            if self.blind_t > 6.0 + 4.0 * agg or dist > 16.0 + 6.0 * agg:
                 self.state = "stalk"
         elif seen:
             self.state = "lurk"
@@ -1436,11 +1554,12 @@ class Presence:
             self.lurk_t = 0.0
 
         if self.state == "hunt":
-            speed = 2.5 if p.exertion > 0.8 else 2.25
+            speed = 2.3 + 0.55 * agg + (0.25 if p.exertion > 0.8 else 0.0)
         elif self.state == "lurk":
-            # It stands still while you watch... for a while.
-            patience = 5.0 if not shy else 11.0
-            speed = 0.0 if self.lurk_t < patience else 0.9
+            # It stands still while you watch... for a while. Less and
+            # less of a while.
+            patience = (5.0 if not shy else 11.0) - 3.0 * agg
+            speed = 0.0 if self.lurk_t < patience else 0.9 + 0.6 * agg
         elif shy:
             # Stalking phase: it closes to the edge of earshot and waits
             # there, pacing you. Footsteps in the dark. Nothing more. Yet.
@@ -1448,7 +1567,8 @@ class Presence:
                 1.1 + min(1.3, max(0.0, (dist - 13.0) * 0.11))
         else:
             # Rubber-band stalk: farther away, it covers ground faster.
-            speed = 1.25 + min(1.3, max(0.0, (dist - 6.0) * 0.11))
+            speed = (1.25 + 0.35 * agg
+                     + min(1.3 + 0.5 * agg, max(0.0, (dist - 6.0) * 0.11)))
 
         # --- Movement along its planned path
         self.replan -= dt
@@ -1547,6 +1667,8 @@ class Audio:
         self.knock = self._sound(self._synth_knock())
         self.scrape = self._sound(self._synth_scrape())
         self.swell = self._sound(self._synth_swell())
+        self.door_creak = self._sound(self._synth_door_creak())
+        self.door_slam = self._sound(self._synth_door_slam())
         self.growl = self._sound(self._synth_growl())
         raw_scream = self._synth_scream()
         self.scream = self._sound(raw_scream)
@@ -1832,6 +1954,44 @@ class Audio:
             out.append(max(-1.0, min(1.0, v + y * 2.0)))
         return out
 
+    def _synth_door_creak(self):
+        """Old hinge under slow load: a wandering squeal with friction."""
+        rng = random.Random(13)
+        out = []
+        f = 480.0
+        ph = 0.0
+        n = 0.0
+        for i in range(int(SAMPLE_RATE * 0.9)):
+            t = i / SAMPLE_RATE
+            if i % 200 == 0:
+                f = max(260.0, min(700.0, f + rng.uniform(-90, 90)))
+            ph += math.tau * f / SAMPLE_RATE
+            v = (math.sin(ph) * 0.5 + math.sin(ph * 2.01) * 0.3
+                 + math.sin(ph * 2.99) * 0.15)
+            v *= 0.55 + 0.45 * math.sin(math.tau * 13 * t + math.sin(t * 40))
+            n = n * 0.8 + rng.uniform(-1, 1) * 0.2
+            v += n * 0.10
+            env = math.sin(math.pi * min(1.0, t / 0.9)) ** 0.7
+            out.append(max(-1, min(1, v * 1.2)) * env * 0.55)
+        return out
+
+    def _synth_door_slam(self):
+        """A door thrown into the wall: wood crack and frame boom."""
+        rng = random.Random(14)
+        out = []
+        y1 = y2 = 0.0
+        r = 0.96
+        for i in range(int(SAMPLE_RATE * 0.4)):
+            t = i / SAMPLE_RATE
+            v = rng.uniform(-1, 1) * math.exp(-t * 70) * 0.9      # crack
+            v += math.sin(math.tau * (95 - 70 * t) * t) * math.exp(-t * 16) * 0.8
+            w = math.tau * 320 / SAMPLE_RATE                       # frame ring
+            x = rng.uniform(-1, 1) * math.exp(-t * 25) * 0.2
+            y = 2 * r * math.cos(w) * y1 - r * r * y2 + x
+            y2, y1 = y1, y
+            out.append(max(-1.0, min(1.0, v + y * 1.5)))
+        return out
+
     def _synth_drip(self):
         """Water drip with a faint echo, for the parking garage."""
         out = []
@@ -1902,6 +2062,18 @@ class Audio:
             snd = self.scream_rev if self.space > 0.45 else self.scream
             self._pan_play(snd, direction, p,
                            min(0.75, 3.0 / max(dist, 2.0) ** 0.5))
+
+    def play_door(self, kind, x, y, p):
+        """Positional door sound. A slam heard around a corner is its own
+        kind of bad news."""
+        if not self.ok:
+            return
+        dx, dy = x - p.x, y - p.y
+        dist = math.hypot(dx, dy)
+        vol = min(0.7, 2.2 / max(dist, 1.0) ** 0.8)
+        if vol > 0.02:
+            snd = self.door_slam if kind == "slam" else self.door_creak
+            self._pan_play(snd, math.atan2(dy, dx), p, vol)
 
     def play_death(self):
         """The catch: impact, then him."""
@@ -2658,6 +2830,12 @@ def main(argv=None):
             if shift_timer <= 0:
                 shift_timer = SHIFT_PERIOD
                 world.peripheral_shift(player.x, player.y, rng)
+
+        agents = [(player.x, player.y, "player")]
+        if presence is not None:
+            agents.append((presence.x, presence.y, "presence"))
+        for kind, dx_, dy_ in world.update_doors(dt, agents):
+            audio.play_door(kind, dx_, dy_, player)
 
         # The hum belongs to the nearest live light panel.
         hum_scan -= dt
