@@ -93,17 +93,21 @@ void main() {
         // every backside (stair risers seen from above, fascias from
         // ledges, pit shafts) renders near-black and reads as a HOLE.
         vec3 N = (dot(cam - wpos, norm) < 0.0) ? -norm : norm;
-        // ambient tied to local light, plus a tiny unconditional floor so
-        // unlit geometry reads as dark wall, not as a gap in the world
-        vec3 acc = vec3(0.18) * cell_l + vec3(0.035);
+        // THE lighting model that ended the 'holes' saga: base
+        // illumination comes from the LIGHT GRID at any distance — a lit
+        // corridor 30 cells away is a lit corridor, not a black void with
+        // emissive panels floating in it. Point lights (gathered within
+        // ~13 cells) only ADD local pooling under fixtures. Darkness is
+        // reserved for blackout zones, its trail, dead banks (cell_l),
+        // flicker, and fog — never for distance.
+        vec3 warm = vec3(1.0, 0.965, 0.86);
+        vec3 acc = vec3(0.05) + warm * (0.52 * cell_l);
         for (int i = 0; i < nlights; i++) {
             vec3 L = lpos[i] - wpos;
             float d = length(L);
-            float att = 1.0 / (0.9 + 0.6 * d + 0.5 * d * d);
+            float att = 1.0 / (0.9 + 0.6 * d + 0.38 * d * d);
             float nl = max(dot(normalize(L), N), 0.0);
-            // nl is direct light; the small constant is scattered bounce
-            // so ceilings and shadowed faces aren't pure black
-            acc += lcol[i] * att * (nl * 1.25 + 0.16);
+            acc += lcol[i] * att * (nl * 0.9 + 0.12);
         }
         c = base * acc * shade;
     }
