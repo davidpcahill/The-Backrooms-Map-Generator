@@ -452,9 +452,17 @@ class WorldMesh:
 
         def wall(x0, z0, x1, z1, h0, h1, nrm, base_floor, pit=False):
             """Vertical wall from h0 (bottom) to h1 (top) along segment.
-            Split at the trim height above base_floor; lower gets mat 5."""
+            Split at the trim height above base_floor; lower gets mat 5.
+            Ends are extended slightly past the corners so the 3mm insets
+            of adjacent faces overlap — otherwise rays can graze through
+            the diagonal micro-gap where two solid cells meet at a corner."""
             if h1 - h0 < 1e-4:
                 return
+            seg_l = math.hypot(x1 - x0, z1 - z0)
+            if seg_l > 1e-6:
+                ux_, uz_ = (x1 - x0) / seg_l, (z1 - z0) / seg_l
+                x0 -= ux_ * 0.015; z0 -= uz_ * 0.015
+                x1 += ux_ * 0.015; z1 += uz_ * 0.015
             ulen = math.hypot(x1 - x0, z1 - z0)
             split = base_floor + TRIM_H
             mats = []
@@ -529,7 +537,11 @@ class WorldMesh:
                     mb = fh(x, y, bx, bz)
                     my_lo = min(ma, mb)
                     if nf >= nc:        # solid (or border): full face
-                        wall(ix, iz, jx, jz, my_lo - 0.02, c, nrm, my_lo)
+                        # border faces cap high — a low-ceiling cell at the
+                        # map edge must not let taller neighbors see over
+                        # its wall into the void
+                        top = max(c, 3.6) if outside else c
+                        wall(ix, iz, jx, jz, my_lo - 0.02, top, nrm, my_lo)
                     else:
                         ta = fh(x + dx, y + dy, ax, az)
                         tb = fh(x + dx, y + dy, bx, bz)
@@ -619,7 +631,7 @@ class Camcorder:
               + math.sin(t * 11.0 + 0.7) * 0.1) * amp
         # focus breathing while the zoom is moving
         breathing = abs(self.zoom_target - self.zoom) * 1.6
-        fov = BASE_FOV / self.zoom * (1.0 + math.sin(t * 6.0) * 0.006 * breathing)
+        fov = BASE_FOV / self.zoom * (1.0 + math.sin(t * 6.0) * 0.015 * breathing)
         self.pitch += (sp - self.pitch) * min(1.0, 6.0 * dt)
         # handheld roll noise: no human keeps a camera level
         rn = (math.sin(t * 1.1 + 0.9) * 0.6 + math.sin(t * 3.1 + 2.7) * 0.3
@@ -1055,8 +1067,8 @@ def main(argv=None):
         scene_fbo.use()
         ctx.viewport = (0, 0, W, H)
         ctx.clear(*[c / 255 for c in bw.FOG], 1.0)
-        ctx.enable(0x0B71)          # DEPTH_TEST
-        ctx.disable(0x0BE2)         # BLEND off for opaque
+        ctx.enable(moderngl.DEPTH_TEST)
+        ctx.disable(moderngl.BLEND)
         n, lpos, lcol = gather_lights(world, player, brightness)
         scene_prog["mvp"].write(mvp.tobytes())
         scene_prog["cam"].value = eye
@@ -1089,7 +1101,7 @@ def main(argv=None):
             layer = row_ * 8 + col_
             xi, yi = int(presence.x) % world.cols, int(presence.y) % world.rows
             cell_l = world.light[yi][xi]
-            ctx.enable(0x0BE2)      # BLEND
+            ctx.enable(moderngl.BLEND)      # BLEND
             ctx.blend_func = (0x0302, 0x0303)
             sprite_prog["mvp"].write(mvp.tobytes())
             sprite_prog["cam"].value = eye
@@ -1181,10 +1193,10 @@ def main(argv=None):
             sprite_prog["layer"].value = float(layer)
             sprite_vbo.write(bb.tobytes())
             sprite_vao.render()
-            ctx.disable(0x0BE2)
+            ctx.disable(moderngl.BLEND)
 
         # ------- post: bloom -------
-        ctx.disable(0x0B71)
+        ctx.disable(moderngl.DEPTH_TEST)
         ping.use()
         ctx.viewport = (0, 0, bw_, bh_)
         scene_tex.use(0)
@@ -1234,7 +1246,7 @@ def main(argv=None):
 
         # ------- overlays: minimap + auto-hiding guide -------
         if show_map or hud_timer > 0:
-            ctx.enable(0x0BE2)
+            ctx.enable(moderngl.BLEND)
             ctx.blend_func = (0x0302, 0x0303)
             if show_map:
                 mm_timer -= dt
@@ -1256,7 +1268,7 @@ def main(argv=None):
                 text = hud_font.render(hud, True, (235, 225, 170))
                 draw_overlay("hud", text, 16, H - 34,
                              min(1.0, hud_timer / 0.5))
-            ctx.disable(0x0BE2)
+            ctx.disable(moderngl.BLEND)
 
         if args.autoshot and not headless:
             if int(t_now / 2.0) != int((t_now - dt) / 2.0):
