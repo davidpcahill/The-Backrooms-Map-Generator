@@ -910,6 +910,8 @@ class AutoWalker:
         self.panic = False
         self.look = 0.0          # >0: turning to look toward the thing
         self.look_cd = 0.0
+        self.look_dwell = 0.0
+        self.seen_t = 0.0        # how recently he SAW it
         self.heard_t = 0.0       # how recently he heard it
         self.scan_cd = rng.uniform(15.0, 35.0)
         self.pause_total = 0.0
@@ -1005,22 +1007,36 @@ class AutoWalker:
                 self.pause_total = 0.0
             return
 
+        # Track how recently he has actually SEEN it.
+        if p.presence_seen:
+            self.seen_t = 6.0
+        else:
+            self.seen_t = max(0.0, getattr(self, "seen_t", 0.0) - dt)
+
         # Looking is how he knows. Hearing something behind him makes him
         # stop and turn to check; mid-flight he throws glances over his
-        # shoulder every few seconds without breaking stride.
+        # shoulder every few seconds without breaking stride. A look-back
+        # holds until the camera is genuinely AIMED at it, then dwells a
+        # beat before whipping back.
         self.look_cd -= dt
         if self.look <= 0 and p.presence_bearing is not None and self.look_cd <= 0:
             if self.panic:
-                self.look = 0.45
+                self.look = 1.4                  # total budget
+                self.look_dwell = 0.35
                 self.look_cd = self.rng.uniform(3.5, 7.0)
             elif p.presence_heard and not p.presence_seen:
-                self.look = 0.9
+                self.look = 1.8
+                self.look_dwell = 0.5
                 self.look_cd = self.rng.uniform(6.0, 12.0)
         if self.look > 0 and p.presence_bearing is not None:
             self.look -= dt
             diff = (p.presence_bearing - p.angle + math.pi) % math.tau - math.pi
-            turn = TURN_SPEED * 1.8 * dt
+            turn = TURN_SPEED * 2.2 * dt
             p.angle += max(-turn, min(turn, diff))
+            if abs(diff) < 0.12:                 # on target: hold the shot
+                self.look_dwell -= dt
+                if self.look_dwell <= 0:
+                    self.look = 0.0
             if self.panic and self.path and self.idx < len(self.path):
                 # keep running the route while the head is turned
                 cx, cy = self.path[self.idx]
@@ -1031,10 +1047,15 @@ class AutoWalker:
                 p.want_vy = dy / d * speed
             else:
                 p.want_vx = p.want_vy = 0.0      # stop. listen. look.
-            return
+            if self.look > 0:
+                return
 
         flee = None
         if self.panic and presence is not None:
+            flee = (presence.x, presence.y)
+        elif (presence is not None and self.seen_t > 0
+                and p.presence_dist is not None and p.presence_dist < 16.0):
+            # He saw it recently: even below panic, routes bias AWAY.
             flee = (presence.x, presence.y)
 
         self.repath_timer -= dt
@@ -1060,6 +1081,22 @@ class AutoWalker:
                 self.idx += 1
             else:
                 break
+
+        # NEVER keep walking toward something he has seen. If the route's
+        # next leg closes on it, drop the route and plan away right now.
+        if (self.seen_t > 0 and p.presence_bearing is not None
+                and p.presence_dist is not None and p.presence_dist < 16.0
+                and self.idx < len(self.path)):
+            cx, cy = self.path[self.idx]
+            dx, dy = world.wrap_delta(p.x, p.y, cx + 0.5, cy + 0.5)
+            d = math.hypot(dx, dy) or 1.0
+            toward = (math.cos(p.presence_bearing) * dx / d
+                      + math.sin(p.presence_bearing) * dy / d)
+            if toward > 0.45:
+                self.plan(world, p, (presence.x, presence.y))
+                if not self.path:
+                    p.want_vx = p.want_vy = 0.0
+                    return
 
         # See the crawlspace coming: start folding down before the door.
         def low_ahead(i):
@@ -1196,6 +1233,8 @@ class Presence:
         self.heading = 0.0
         self.dimmed = {}         # cells it's disturbing: (x,y) -> (light, panel)
         self.killed = {}         # lights it broke: (x,y) -> (light, panel, t)
+        self.wave = []           # hunt: lights dying in sequence toward him
+        self.wave_t = 0.0
         # Tension: it stalks first. Early on it keeps its distance and just
         # lets itself be heard; only once tension has built does it close.
         # Sightings feed it. Crowding it feeds it faster.
@@ -1327,7 +1366,10 @@ class Presence:
         heard = dist < 13.0
         threat = max(0.0, 1.0 - dist / 16.0)
         if seen:
-            target = threat
+            # SEEING it is never casual. Any confirmed sighting inside 14
+            # cells breaks him outright; even a distant glimpse leaves him
+            # badly rattled. Nobody calmly keeps walking toward that.
+            target = max(threat, 0.7 if dist < 14.0 else 0.5)
         elif heard:
             # Sound alone unnerves but rarely breaks him — he has to SEE
             # it (or have it nearly on top of him) to run.
@@ -1338,7 +1380,8 @@ class Presence:
         if world.light[yi][xi] < 0.4:
             target = max(target, 0.15)     # the dark is never comfortable
         if target > p.fear:
-            p.fear += (target - p.fear) * min(1.0, 2.2 * dt)
+            # sightings hit like a spike, sounds creep up
+            p.fear += (target - p.fear) * min(1.0, (3.5 if seen else 2.2) * dt)
         else:
             p.fear += (target - p.fear) * min(1.0, 0.12 * dt)
         p.presence_bearing = bearing
@@ -1371,6 +1414,11 @@ class Presence:
                     p.fear = max(p.fear, 0.8)
                     if audio:
                         audio.play_scream(bearing, dist, p)
+                    # and the lights die in a wave, rolling from it toward
+                    # him down its own path — the dark coming for you
+                    self.wave = [(cell, 0.07 * i) for i, cell in
+                                 enumerate(self.path[self.idx:self.idx + 16])]
+                    self.wave_t = 0.0
         elif self.state == "hunt":
             # Hunting but he broke away: without line of sight long
             # enough, it loses the thread and goes back to stalking.
@@ -1434,6 +1482,27 @@ class Presence:
                 self.stride = max(0.34, 0.68 - speed * 0.09) * self.rng.uniform(0.95, 1.05)
                 if audio:
                     audio.presence_step(bearing, dist, p)
+
+        # the hunt's darkness wave: lights die in sequence along its path
+        if self.wave:
+            self.wave_t += dt
+            remaining = []
+            for (wx, wy), delay in self.wave:
+                if delay <= self.wave_t:
+                    for oy in (-1, 0, 1):
+                        for ox in (-1, 0, 1):
+                            xi, yi = (wx + ox) % world.cols, (wy + oy) % world.rows
+                            key = (xi, yi)
+                            if (key not in self.killed
+                                    and world.light[yi][xi] > 0.3):
+                                self.killed[key] = (
+                                    world.light[yi][xi], world.panel[yi][xi],
+                                    self.rng.uniform(7.0, 12.0))
+                                world.light[yi][xi] = 0.12
+                                world.panel[yi][xi] = False
+                else:
+                    remaining.append(((wx, wy), delay))
+            self.wave = remaining
 
         self._light_disturbance(world, dt)
         if audio:
