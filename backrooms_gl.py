@@ -77,6 +77,8 @@ uniform int nlights;
 uniform vec3 lpos[24];
 uniform vec3 lcol[24];
 uniform vec3 fogcol;
+uniform float fogden;
+uniform float lscale;
 uniform float flick;
 in vec2 uv; in vec3 norm; in vec3 wpos; in float shade; flat in int mat;
 out vec4 fragment;
@@ -109,10 +111,10 @@ void main() {
             float nl = max(dot(normalize(L), N), 0.0);
             acc += lcol[i] * att * (nl * 0.9 + 0.12);
         }
-        c = base * acc * shade;
+        c = base * acc * lscale * shade;
     }
     float fd = length(wpos - cam);
-    float fog = 1.0 - exp(-fd * 0.10);
+    float fog = 1.0 - exp(-fd * fogden);
     fragment = vec4(mix(c, fogcol, clamp(fog, 0.0, 1.0)), 1.0);
 }
 """
@@ -131,6 +133,7 @@ uniform sampler2DArray tex;
 uniform float layer;
 uniform vec3 cam;
 uniform vec3 fogcol;
+uniform float fogden;
 uniform float cell_l;
 uniform int mode;        // 0 sprite, 1 contact blob, 2 projected shadow
 uniform float shadow_k;
@@ -142,7 +145,7 @@ void main() {
         : texture(tex, vec3(uv, layer));
     if (t.a < 0.03) discard;
     float fd = length(wpos - cam);
-    float fog = 1.0 - exp(-fd * 0.10);
+    float fog = 1.0 - exp(-fd * fogden);
     if (mode == 2) {     // its shadow, thrown across the floor by a light
         fragment = vec4(0.0, 0.0, 0.0, t.a * shadow_k * (1.0 - clamp(fog, 0.0, 1.0)));
         return;
@@ -334,22 +337,34 @@ def build_textures(ctx, pygame_module):
             col = tuple(min(255, max(0, c - d)) for c in base)
             s.fill(col, (rng.randrange(size), rng.randrange(size), 1, rng.randint(1, ln)))
 
-    # 0: upper wallpaper (stripes) or concrete
+    def grout_grid(s, base, step=32):
+        g = tuple(max(0, c - 46) for c in base)
+        for k in range(0, size, step):
+            s.fill(g, (k, 0, 2, size))
+            s.fill(g, (0, k, size, 2))
+
+    # 0: upper wallpaper (stripes), tile, or concrete
     wall = new(S["wall_upper"])
     if S["kind"] == "wallpaper":
         for x0 in range(0, size, 32):
             wall.fill(tuple(max(0, c - 10) for c in S["wall_upper"]), (x0, 0, 16, size))
         for x0 in range(0, size, 16):
             wall.fill(tuple(max(0, c - 15) for c in S["wall_upper"]), (x0, 0, 1, size))
+    elif S["kind"] == "tile":
+        grout_grid(wall, S["wall_upper"])
     else:
         for y0 in range(0, size, 128):
             wall.fill(tuple(max(0, c - 16) for c in S["wall_upper"]), (0, y0, size, 3))
-    speckle(wall, S["wall_upper"], 2200, 4, 12)
+    speckle(wall, S["wall_upper"], 2200 if S["kind"] != "tile" else 700, 4, 12)
     surfs.append(wall)
 
-    # 1: carpet / concrete floor
+    # 1: carpet / concrete / tiled floor
     floor = new(S["carpet"])
-    speckle(floor, S["carpet"], 5200, 3, 16, 3)
+    if S["kind"] == "tile":
+        grout_grid(floor, S["carpet"])
+        speckle(floor, S["carpet"], 900, 3, 8, 1)
+    else:
+        speckle(floor, S["carpet"], 5200, 3, 16, 3)
     surfs.append(floor)
 
     # 2: ceiling tile with grid seams
@@ -725,6 +740,14 @@ def load_sprite_layers(ctx, pygame_module):
             bw.resource_path("assets/bacteria_sheet.png"))
     except Exception:
         return None
+    tint = bw.STYLE.get("monster_tint")
+    if tint:
+        # placeholder per-level entity: the Howler re-dressed until the
+        # level's own rigged model gets baked. copy() keeps the PNG's
+        # own alpha format — convert_alpha() would need a non-GL display.
+        sheet = sheet.copy()
+        sheet.fill((*tint, 255),
+                   special_flags=pygame_module.BLEND_RGBA_MULT)
     fw, fh = sheet.get_width() // 8, sheet.get_height() // 8
     frames = []
     max_w = max_h = 1
@@ -751,7 +774,8 @@ def main(argv=None):
     ap = argparse.ArgumentParser(
         description="The Backrooms, on the GPU, through a camcorder.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    ap.add_argument("--level", type=int, choices=(0, 1), default=0)
+    ap.add_argument("--level", default="0",
+                    choices=("0", "1", "2", "37", "run"))
     ap.add_argument("--seed", type=int, default=None)
     ap.add_argument("--map-cols", type=int, default=120)
     ap.add_argument("--map-rows", type=int, default=80)
@@ -1053,7 +1077,7 @@ def main(argv=None):
                 regen()             # the fall ends somewhere else entirely
                 walker = bw.AutoWalker(rng)
 
-        if not args.no_shift:
+        if not args.no_shift and bw.STYLE.get("shift", True):
             shift_timer -= dt
             if shift_timer <= 0:
                 shift_timer = bw.SHIFT_PERIOD
@@ -1146,6 +1170,8 @@ def main(argv=None):
         scene_prog["lpos"].write(lpos.tobytes())
         scene_prog["lcol"].write(lcol.tobytes())
         scene_prog["fogcol"].value = tuple(c / 255 for c in bw.FOG)
+        scene_prog["fogden"].value = bw.STYLE.get("fog_density", 0.10)
+        scene_prog["lscale"].value = bw.STYLE.get("light_scale", 1.0)
         scene_prog["gridsize"].value = (float(world.cols), float(world.rows))
         scene_prog["flick"].value = brightness
         textures.use(0)
@@ -1182,6 +1208,7 @@ def main(argv=None):
             sprite_prog["mvp"].write(mvp.tobytes())
             sprite_prog["cam"].value = eye
             sprite_prog["fogcol"].value = tuple(c / 255 for c in bw.FOG)
+            sprite_prog["fogden"].value = bw.STYLE.get("fog_density", 0.10)
             sprite_prog["cell_l"].value = cell_l
             stex.use(2)
             sprite_prog["tex"].value = 2

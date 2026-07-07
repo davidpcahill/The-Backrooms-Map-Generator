@@ -144,17 +144,83 @@ STYLES = {
         mezzanines=(1, 2),
         drips=True,
     ),
+    # Level 2 "Pipe Dreams": utility tunnels. Long dark concrete runs,
+    # low ceilings, caged warm bulbs, steam-pipe ducts (crawls). Canon:
+    # Level 2 does NOT shift — the maze you map stays mapped.
+    2: dict(
+        name="Level 2", kind="concrete",
+        wall_upper=(96, 92, 84), wall_lower=(74, 70, 62),
+        wall_trim=(52, 48, 40), ceil_tile=(70, 68, 62),
+        light_panel=(255, 210, 150), carpet=(58, 56, 50),
+        pit_shaft=(30, 28, 24), pit_bottom=(4, 4, 3), fog=(6, 5, 4),
+        hum_freq=60, ceil_norm=0.85,
+        tall=(0, 1), tall_h=(1.3, 1.7), crawl=(4, 7), sunken=(0, 0),
+        pits=(0, 0), blackouts=(3, 5), raked=(0, 0), ramp_chance=0.0,
+        mezzanines=(0, 1),
+        panel=lambda x, y: (x + y) % 5 == 0, panel_prob=0.5,
+        gen=dict(rooms=1, pillar_rooms=1, poly_rooms=0,
+                 fill=0.60, merge_stop=0.5),
+        closed_rooms=(2, 4),
+        drips=True,
+        shift=False,
+        monster_tint=(255, 130, 100),
+    ),
+    # Level 37 "Poolrooms": white tile, bright diffuse light, empty
+    # pools, water-colored depths. Almost no entity — ALMOST.
+    37: dict(
+        name="Level 37", kind="tile",
+        wall_upper=(228, 240, 242), wall_lower=(210, 228, 232),
+        wall_trim=(170, 200, 206), ceil_tile=(234, 244, 246),
+        light_panel=(250, 255, 255), carpet=(196, 224, 228),
+        pit_shaft=(110, 185, 200), pit_bottom=(60, 145, 170),
+        fog=(150, 190, 200), fog_density=0.028, light_scale=0.62,
+        hum_freq=120, ceil_norm=1.2,
+        tall=(3, 5), tall_h=(1.8, 3.2), crawl=(0, 1), sunken=(3, 5),
+        pits=(0, 0), blackouts=(0, 0), raked=(0, 0), ramp_chance=0.3,
+        mezzanines=(1, 2),
+        panel=lambda x, y: x % 2 == 0 and y % 2 == 0, panel_prob=0.85,
+        gen=dict(rooms=7, pillar_rooms=2, poly_rooms=5,
+                 fill=0.36, merge_stop=0.8),
+        closed_rooms=(0, 2),
+        drips=True,
+        monster_tint=(190, 225, 240),
+        presence_mode="rare",
+    ),
+    # Level ! "RUN FOR YOUR LIFE!": one long red-lit corridor. It is
+    # already behind you. It already knows. RUN.
+    "run": dict(
+        name="Level !", kind="concrete",
+        wall_upper=(150, 120, 118), wall_lower=(120, 92, 90),
+        wall_trim=(80, 55, 55), ceil_tile=(120, 104, 102),
+        light_panel=(255, 120, 105), carpet=(96, 84, 82),
+        pit_shaft=(40, 30, 30), pit_bottom=(5, 3, 3), fog=(14, 6, 6),
+        hum_freq=50, ceil_norm=1.0,
+        tall=(1, 2), tall_h=(1.6, 2.2), crawl=(0, 0), sunken=(0, 0),
+        pits=(0, 0), blackouts=(2, 4), raked=(0, 0), ramp_chance=0.0,
+        mezzanines=(0, 0),
+        panel=lambda x, y: y % 2 == 0 and x % 3 != 1, panel_prob=0.8,
+        gen=dict(rooms=1, pillar_rooms=0, poly_rooms=0,
+                 fill=0.62, merge_stop=0.45),
+        closed_rooms=(0, 1),
+        drips=False,
+        artery=True,
+        monster_tint=(120, 60, 60),
+        presence_mode="chase",
+    ),
 }
 
 STYLE = STYLES[0]
 _SHADE_CACHE: dict = {}
 
 
-def apply_style(level: int) -> None:
-    """Set the active level style. Palette lives in module globals because
-    shade() and the renderer are hot paths."""
+def apply_style(level) -> None:
+    """Set the active level style ('0'/'1'/'2'/'37' or 'run'). Palette
+    lives in module globals because shade() and the renderer are hot
+    paths."""
     global STYLE, WALL_UPPER, WALL_LOWER, WALL_TRIM, CEIL_TILE
     global LIGHT_PANEL, CARPET, PIT_SHAFT, PIT_BOTTOM, FOG
+    if isinstance(level, str) and level.isdigit():
+        level = int(level)
     STYLE = STYLES[level]
     _SHADE_CACHE.clear()
     WALL_UPPER = STYLE["wall_upper"]
@@ -231,6 +297,17 @@ def make_wall_textures(pygame_module):
         tex.fill(WALL_TRIM, (0, trim_top, TEX_W, lower_top - trim_top))
         tex.fill(tuple(min(255, c + 26) for c in WALL_TRIM),
                  (0, trim_top, TEX_W, 1))
+    elif STYLE["kind"] == "tile":          # poolrooms: glazed white tile
+        grout = tuple(max(0, c - 46) for c in WALL_UPPER)
+        for x0 in range(0, TEX_W, 32):
+            tex.fill(grout, (x0, 0, 2, TEX_H))
+        for y0 in range(0, TEX_H, 32):
+            tex.fill(grout, (0, y0, TEX_W, 2))
+        for _ in range(700):               # glaze sheen
+            x = rng.randrange(TEX_W)
+            y = rng.randrange(TEX_H)
+            tex.fill(tuple(min(255, c + rng.choice((4, 9)))
+                           for c in WALL_UPPER), (x, y, 1, 1))
     else:  # concrete
         for vy in range(0, TEX_H, 64):     # horizontal formwork lines
             tex.fill(tuple(max(0, c - 16) for c in WALL_UPPER),
@@ -404,6 +481,16 @@ class World:
                     self.ceil[y][x] = ceil_norm
                     open_cells.append((x, y))
         self.open_set = set(open_cells)
+
+        if STYLE.get("artery"):
+            # Level !: one long straight run the whole map wide. The maze
+            # hangs off it; the corridor IS the level.
+            y0 = R // 2 + rng.randint(-R // 6, R // 6)
+            for x in range(C):
+                for dy in (0, 1):
+                    self.ceil[y0 + dy][x] = ceil_norm
+                    self.floor[y0 + dy][x] = 0.0
+                    self.open_set.add((x, y0 + dy))
 
         self._add_tall_halls(rng)
         self._add_crawlspaces(rng)
@@ -725,7 +812,7 @@ class World:
                 x0 = rng.randint(2, self.cols - w - 3)
                 y0 = rng.randint(2, self.rows - h - 3)
                 ok = all(
-                    self.floor[y][x] == 0.0 and 0.9 < self.ceil[y][x] <= 1.3
+                    self.floor[y][x] == 0.0 and 0.7 < self.ceil[y][x] <= 1.35
                     for y in range(y0 - 1, y0 + h + 1)
                     for x in range(x0 - 1, x0 + w + 1))
                 if not ok:
@@ -1470,6 +1557,13 @@ def load_bacteria_frames(pygame_module):
             resource_path("assets/bacteria_sheet.png")).convert_alpha()
     except Exception:
         return None
+    tint = STYLE.get("monster_tint")
+    if tint:
+        # placeholder per-level entity: the Howler re-dressed until the
+        # level's own rigged model gets baked
+        sheet = sheet.copy()
+        sheet.fill((*tint, 255),
+                   special_flags=pygame_module.BLEND_RGBA_MULT)
     fw, fh = sheet.get_width() // 8, sheet.get_height() // 8
     # Per-frame crop: each frame's lowest opaque pixel is its ground
     # contact, so the feet stay planted even as limbs swing.
@@ -1578,10 +1672,16 @@ class Presence:
         self.killed = {}         # lights it broke: (x,y) -> (light, panel, t)
         self.wave = []           # hunt: lights dying in sequence toward him
         self.wave_t = 0.0
+        # Per-level temperament: 'normal' stalks then hunts; 'rare'
+        # (Poolrooms) is a half-glimpsed thing that almost never commits;
+        # 'chase' (Level !) is already coming and already knows.
+        self.mode = STYLE.get("presence_mode", "normal")
         # Tension: it stalks first. Early on it keeps its distance and just
         # lets itself be heard; only once tension has built does it close.
         # Sightings feed it. Crowding it feeds it faster.
         self.tension = 0.75 if ahead else 0.0
+        if self.mode == "chase":
+            self.tension = 1.0
         self.seen_prev = False
         # The director: aggression ramps with time since the last kill,
         # scaled by a per-cycle mood roll — some cycles it toys with him
@@ -1605,6 +1705,17 @@ class Presence:
                 if not world.solid(x, y):
                     return x + 0.5, y + 0.5
         cells = sorted(world.open_set)
+        if self.mode == "chase":
+            # Level !: it starts BEHIND him, close enough to hear coming.
+            back = p.angle + math.pi
+            for _ in range(300):
+                x, y = self.rng.choice(cells)
+                dx, dy = world.wrap_delta(p.x, p.y, x + 0.5, y + 0.5)
+                d = math.hypot(dx, dy)
+                rel = (math.atan2(dy, dx) - back + math.pi) % math.tau - math.pi
+                if (12 < d < 22 and abs(rel) < 0.9
+                        and world.floor[y % world.rows][x % world.cols] > -1.5):
+                    return x + 0.5, y + 0.5
         for _ in range(200):
             x, y = self.rng.choice(cells)
             d = math.hypot(*world.wrap_delta(p.x, p.y, x + 0.5, y + 0.5))
@@ -1714,6 +1825,10 @@ class Presence:
         self.alive_t += dt
         # 0 for the first ~55s, full hunger by ~5 minutes (mood-scaled)
         agg = max(0.0, min(1.0, (self.alive_t * self.mood - 55.0) / 230.0))
+        if self.mode == "chase":
+            agg = max(agg, 0.8)      # Level ! has no warm-up
+        elif self.mode == "rare":
+            agg *= 0.35              # the Poolrooms thing barely wants
 
         # --- Perception (his, of it). Not radar: seeing it requires line
         # of sight, facing it, AND enough light where it stands. Since it
@@ -1775,6 +1890,8 @@ class Presence:
         p_noise = 9.0 if p.running else (
             5.5 if math.hypot(p.vx, p.vy) > 0.5 else 2.5)
         contact = (los and dist < 20.0) or dist < p_noise * (1.0 if los else 0.55)
+        if self.mode == "chase":
+            contact = True     # on Level ! it never loses the thread. RUN.
         if contact:
             self.belief = (p.x, p.y)
             self.contact_t = 0.0
@@ -1798,13 +1915,16 @@ class Presence:
         # holds its distance, lets itself be heard, shows itself in
         # glimpses. Time feeds it. Sightings feed it. Crowding it feeds
         # it fast. Only past the threshold does it truly come for him.
+        cap = 0.45 if self.mode == "rare" else 1.0
         if seen and not self.seen_prev:
-            self.tension = min(1.0, self.tension + 0.10)
+            self.tension = min(cap, self.tension + 0.10)
         self.seen_prev = seen
-        self.tension = min(1.0, self.tension + dt * (1.0 + 2.0 * agg) / 130.0)
+        self.tension = min(cap, self.tension + dt * (1.0 + 2.0 * agg) / 130.0)
+        if self.mode == "chase":
+            self.tension = 1.0
         shy = self.tension < 0.5
         if shy and dist < 5.0:
-            self.tension = min(1.0, self.tension + dt / 12.0)
+            self.tension = min(cap, self.tension + dt / 12.0)
 
         # --- State machine: STALK (rubber-band pace, but a shy stalker
         # holds a respectful, horrible distance), LURK (stared at from
@@ -2936,8 +3056,10 @@ def main(argv=None):
     ap = argparse.ArgumentParser(
         description="First-person walkthrough of a generated Backrooms map.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    ap.add_argument("--level", type=int, choices=(0, 1), default=0,
-                    help="0 = the classic yellow rooms, 1 = parking garage")
+    ap.add_argument("--level", default="0",
+                    choices=("0", "1", "2", "37", "run"),
+                    help="0 yellow rooms, 1 parking garage, 2 pipe "
+                         "dreams, 37 poolrooms, run = Level ! (RUN)")
     ap.add_argument("--seed", type=int, default=None)
     ap.add_argument("--map-cols", type=int, default=120, help="map width in cells (pre-upscale)")
     ap.add_argument("--map-rows", type=int, default=80, help="map height in cells (pre-upscale)")
@@ -3131,7 +3253,7 @@ def main(argv=None):
                 player.fear = 0.5 if caught else 0.0
                 caught = False
 
-        if not args.no_shift:
+        if not args.no_shift and STYLE.get("shift", True):
             shift_timer -= dt
             if shift_timer <= 0:
                 shift_timer = SHIFT_PERIOD
