@@ -985,7 +985,9 @@ def main(argv=None):
                 death_roll = 0.62 * k * death_roll_dir
             if death_t > 2.55:      # tape cuts; somewhere else, later
                 np_ = bw.spawn(world, rng)
-                player.x, player.y, player.angle = np_.x, np_.y, np_.angle
+                player.x, player.y = np_.x, np_.y
+                player.body = player.angle = np_.angle
+                player.head_off = player.head_target = 0.0
                 player.z = player.vz = 0.0
                 player.eye = bw.EYE_STAND
                 player.fear = 0.5
@@ -1004,14 +1006,15 @@ def main(argv=None):
                 keys = pygame.key.get_pressed()
                 turn = ((keys[pygame.K_RIGHT] or keys[pygame.K_e])
                         - (keys[pygame.K_LEFT] or keys[pygame.K_q]))
-                player.angle += turn * bw.TURN_SPEED * dt
+                player.body += turn * bw.TURN_SPEED * dt
+                player.head_target = 0.0
                 fwd = keys[pygame.K_w] - keys[pygame.K_s]
                 strafe = keys[pygame.K_d] - keys[pygame.K_a]
                 run = keys[pygame.K_LSHIFT] or keys[pygame.K_RSHIFT]
                 player.running = bool(run and (fwd or strafe))
                 if fwd or strafe:
-                    dx = math.cos(player.angle) * fwd - math.sin(player.angle) * strafe
-                    dy = math.sin(player.angle) * fwd + math.cos(player.angle) * strafe
+                    dx = math.cos(player.body) * fwd - math.sin(player.body) * strafe
+                    dy = math.sin(player.body) * fwd + math.cos(player.body) * strafe
                     mag = math.hypot(dx, dy) or 1.0
                     speed = bw.MOVE_SPEED * (1.45 if player.running else 1.0)
                     if player.crouched():
@@ -1033,7 +1036,9 @@ def main(argv=None):
             fade -= dt
             if player.fell and fade < 0.6:
                 np_ = bw.spawn(world, rng)
-                player.x, player.y, player.angle = np_.x, np_.y, np_.angle
+                player.x, player.y = np_.x, np_.y
+                player.body = player.angle = np_.angle
+                player.head_off = player.head_target = 0.0
                 player.z = player.vz = 0.0
                 player.vx = player.vy = player.want_vx = player.want_vy = 0.0
                 player.fell = False

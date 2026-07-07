@@ -112,18 +112,15 @@ STYLES = {
         light_panel=(255, 252, 224), carpet=(177, 157, 112),
         pit_shaft=(58, 50, 32), pit_bottom=(8, 7, 4), fog=(24, 20, 8),
         hum_freq=120, ceil_norm=1.0,
-        # sunken=(0,0): terraced bowls looked like broken rendering from
-        # inside, every time, no matter how correct the mesh was. Level 0
-        # keeps pits and raked floors; proper staircases can come back
-        # later as a controlled corridor feature.
-        # Level 0's floor is DEAD FLAT — which is the canon. Every floor
-        # feature tried here (terraced wings, pit lattices, raked tilts)
-        # read as broken rendering at first-person grazing angles. Its
-        # verticality lives in the CEILINGS: tall halls, crawlspaces,
-        # soffits, pillars. Those work.
-        tall=(3, 5), tall_h=(1.8, 3.4), crawl=(2, 4), sunken=(0, 0),
+        # sunken/raked/pits = 0: SCATTERED floor features (terraced
+        # wings, pit lattices, raked tilts) read as broken rendering at
+        # first-person grazing angles, every time. Level 0's verticality
+        # is CEILINGS (tall halls, crawlspaces, pillars) plus DESIGNED
+        # floor drops: mezzanines with straight staircases and lethal
+        # ledges. Coherent architecture works; noise doesn't.
+        tall=(4, 6), tall_h=(1.8, 3.4), crawl=(3, 5), sunken=(0, 0),
         pits=(0, 0), blackouts=(1, 2), raked=(0, 0), ramp_chance=0.5,
-        mezzanines=(1, 2),
+        mezzanines=(2, 3),
         panel=lambda x, y: x % 2 == 1 and y % 3 == 1, panel_prob=0.7,
         # denser maze: lower fill + higher merge_stop = more corridors,
         # more junctions, more dead ends to back out of
@@ -144,7 +141,7 @@ STYLES = {
         panel=lambda x, y: y % 4 == 2, panel_prob=0.55,
         gen=dict(rooms=3, pillar_rooms=6, poly_rooms=1),
         closed_rooms=(2, 4),
-        mezzanines=(1, 1),
+        mezzanines=(1, 2),
         drips=True,
     ),
 }
@@ -419,6 +416,18 @@ class World:
         self._add_doorways(rng)
         self._place_panels(rng)
 
+        # Interest map: cells where the architecture does something —
+        # tall halls, crawlspaces, stairs and lower floors, doors. The
+        # walker biases its wandering toward these so the footage
+        # actually SHOWS the world instead of orbiting beige corridors.
+        self.interest = set()
+        for y in range(R):
+            for x in range(C):
+                f, c = self.floor[y][x], self.ceil[y][x]
+                if f < c and (c > 1.6 or c < 0.6 or f < -0.05):
+                    self.interest.add((x, y))
+        self.interest.update(self.doors.keys())
+
     # -- zone helpers -------------------------------------------------------
 
     def _open3(self, x, y):
@@ -652,13 +661,21 @@ class World:
         nbrs8 = tuple((dx, dy) for dx in (-1, 0, 1) for dy in (-1, 0, 1)
                       if dx or dy)
         for _ in range(rng.randint(lo, hi)):
-            for _try in range(12):
+            for _try in range(16):
                 blob = self._fill_holes(
                     self._blob(rng, rng.randint(300, 550), rooms_only=True))
                 interior = {c for c in blob
                             if all((c[0] + dx, c[1] + dy) in blob
                                    for dx, dy in nbrs8)}
                 if len(interior) < 70:
+                    continue
+                # Prefer dropping the floor under a TALL hall: the drop
+                # plus the high ceiling reads as a genuine two-story
+                # atrium from the balcony rim. Fall back to any room
+                # late in the attempt budget.
+                tall_overlap = sum(1 for (x, y) in interior
+                                   if self.ceil[y][x] > 1.6)
+                if _try < 10 and tall_overlap < 25:
                     continue
                 for x, y in interior:
                     if self.floor[y][x] == 0.0 and self.ceil[y][x] > 0.9:
@@ -920,8 +937,17 @@ class World:
 # ---------------------------------------------------------------------------
 
 class Player:
+    """Tank model: the BODY (feet, movement heading) and the HEAD (camera)
+    are tracked separately. The body turns like a walking human; the head
+    snaps around fast, is limited to over-the-shoulder range, and eases
+    back to center. He can look behind himself without running backwards."""
+
     def __init__(self, x, y, angle):
-        self.x, self.y, self.angle = x, y, angle
+        self.x, self.y = x, y
+        self.body = angle        # movement/torso heading
+        self.head_off = 0.0      # head yaw relative to body (clamped)
+        self.head_target = 0.0   # where the controller wants the head
+        self.angle = angle       # camera yaw = body + head_off (derived)
         self.z = 0.0
         self.vz = 0.0
         self.vx = self.vy = 0.0
@@ -1039,6 +1065,14 @@ class Player:
         self.bob = math.sin(self.bob_phase) * amp * min(ratio, 1.0)
         self.sway = math.sin(self.bob_phase * 0.5) * 0.009 * min(ratio, 1.0)
 
+        # Head: fast toward its target, clamped to over-the-shoulder
+        # range. The camera is the head; the feet are the body.
+        tgt = max(-2.75, min(2.75, self.head_target))
+        d_h = tgt - self.head_off
+        rate = 6.5 if abs(tgt) > abs(self.head_off) else 4.5
+        self.head_off += max(-rate * dt, min(rate * dt, d_h))
+        self.angle = self.body + self.head_off
+
     def crouched(self):
         return self.eye < EYE_STAND - 0.1
 
@@ -1067,6 +1101,9 @@ class AutoWalker:
         self.heard_t = 0.0       # how recently he heard it
         self.scan_cd = rng.uniform(15.0, 35.0)
         self.pause_total = 0.0
+        self.sweep_amp = 1.0     # head sweep amplitude during a scan
+        self.gaze_seed = rng.uniform(0.0, math.tau)
+        self.seen_feats = deque(maxlen=4)   # features already visited
 
     def plan(self, world: World, p: Player, flee_from=None):
         start = (int(p.x) % world.cols, int(p.y) % world.rows)
@@ -1106,7 +1143,14 @@ class AutoWalker:
                 if d < 1e-6:
                     return -1.0
                 align = math.cos(math.atan2(dy, dx) - self.explore_angle)
-                return d * (1.0 + 0.9 * align) + self.rng.uniform(0.0, 4.0)
+                s = d * (1.0 + 0.9 * align) + self.rng.uniform(0.0, 4.0)
+                # Curiosity: architecture he hasn't filmed lately pulls
+                # him in — stairs, atriums, crawls, doors.
+                if c in world.interest and all(
+                        math.hypot(*world.wrap_delta(c[0], c[1], vx, vy)) > 18
+                        for vx, vy in self.seen_feats):
+                    s += 16.0
+                return s
 
         goal = max(far, key=score)
         path = []
@@ -1121,6 +1165,11 @@ class AutoWalker:
         self.explore_angle += self.rng.uniform(-0.7, 0.7)
 
     def update(self, world: World, p: Player, dt, presence=None):
+        # The feet steer the BODY; everything the head does is expressed
+        # through p.head_target (an offset from the body that the Player
+        # eases toward). Default each frame: eyes forward.
+        p.head_target = 0.0
+
         # Panic with hysteresis: something got too close. Run — and no one
         # relaxes while they can still HEAR it coming.
         if p.presence_heard:
@@ -1145,16 +1194,17 @@ class AutoWalker:
             if self.scan_cd <= 0:
                 self.scan_cd = self.rng.uniform(20.0, 45.0)
                 self.pause = self.pause_total = self.rng.uniform(2.4, 4.2)
-                self.pause_turn = (self.rng.choice((-1, 1))
-                                   * TURN_SPEED * self.rng.uniform(0.25, 0.4))
+                self.sweep_amp = (self.rng.choice((-1, 1))
+                                  * self.rng.uniform(0.75, 1.25))
 
         if self.pause > 0:
             self.pause -= dt
             p.want_vx = p.want_vy = 0.0
-            # sweep one way, then back the other
+            # Feet planted; the HEAD sweeps one way, then the other. The
+            # body never spins in place like a turret.
             sign = 1.0 if (self.pause_total <= 0
                            or self.pause > self.pause_total * 0.5) else -1.0
-            p.angle += self.pause_turn * sign * dt
+            p.head_target = self.sweep_amp * sign
             if self.pause <= 0:
                 self.pause_total = 0.0
             return
@@ -1182,10 +1232,14 @@ class AutoWalker:
                 self.look_cd = self.rng.uniform(6.0, 12.0)
         if self.look > 0 and p.presence_bearing is not None:
             self.look -= dt
-            diff = (p.presence_bearing - p.angle + math.pi) % math.tau - math.pi
-            turn = TURN_SPEED * 2.2 * dt
-            p.angle += max(-turn, min(turn, diff))
-            if abs(diff) < 0.12:                 # on target: hold the shot
+            # The HEAD whips toward the bearing — over the shoulder, up to
+            # its clamp — while the BODY keeps carrying him down the route.
+            # He is never running backwards; he is running and LOOKING.
+            off = (p.presence_bearing - p.body + math.pi) % math.tau - math.pi
+            p.head_target = off
+            aim = (p.presence_bearing - p.angle + math.pi) % math.tau - math.pi
+            # On target — or twisted as far as a neck goes — hold the shot.
+            if abs(aim) < 0.14 or (abs(off) > 2.7 and abs(p.head_off) > 2.55):
                 self.look_dwell -= dt
                 if self.look_dwell <= 0:
                     self.look = 0.0
@@ -1202,8 +1256,19 @@ class AutoWalker:
                     speed = 0.0                  # it's RIGHT there. freeze.
                 else:
                     speed = MOVE_SPEED * 0.55
-                p.want_vx = dx / d * speed
-                p.want_vy = dy / d * speed
+                # The body steers toward the route and the FEET move the
+                # way the body faces — velocity never detaches from the
+                # legs, so he physically cannot run backwards.
+                tgt = math.atan2(dy, dx)
+                bd = (tgt - p.body + math.pi) % math.tau - math.pi
+                bt = TURN_SPEED * (1.8 if self.panic else 1.0) * dt
+                p.body += max(-bt, min(bt, bd))
+                if self.panic:
+                    speed *= max(0.35, math.cos(bd))
+                else:
+                    speed *= max(0.0, math.cos(bd)) if abs(bd) < 1.5 else 0.0
+                p.want_vx = math.cos(p.body) * speed
+                p.want_vy = math.sin(p.body) * speed
             else:
                 p.want_vx = p.want_vy = 0.0
             if self.look > 0:
@@ -1224,7 +1289,7 @@ class AutoWalker:
                 self.repath_timer = 3.5
             if not self.path:
                 p.want_vx = p.want_vy = 0.0
-                p.angle += TURN_SPEED * 0.4 * dt
+                p.body += TURN_SPEED * 0.4 * dt
                 return
 
         nxt = self.path[self.idx]
@@ -1237,6 +1302,8 @@ class AutoWalker:
             cx, cy = self.path[self.idx]
             dx, dy = world.wrap_delta(p.x, p.y, cx + 0.5, cy + 0.5)
             if math.hypot(dx, dy) < self.CARROT_RADIUS:
+                if (cx, cy) in world.interest:
+                    self.seen_feats.append((cx, cy))
                 self.idx += 1
             else:
                 break
@@ -1273,13 +1340,13 @@ class AutoWalker:
             self.path = []
             if not self.panic and p.fear < 0.12 and self.rng.random() < 0.5:
                 self.pause = self.pause_total = self.rng.uniform(0.7, 1.8)
-                self.pause_turn = self.rng.choice((-1, 1)) * TURN_SPEED * 0.35
+                self.sweep_amp = self.rng.choice((-1, 1)) * self.rng.uniform(0.5, 0.9)
             return
 
         target = math.atan2(dy, dx)
-        diff = (target - p.angle + math.pi) % math.tau - math.pi
+        diff = (target - p.body + math.pi) % math.tau - math.pi
         turn = TURN_SPEED * (1.8 if self.panic else 1.0)
-        p.angle += max(-turn * dt, min(turn * dt, diff))
+        p.body += max(-turn * dt, min(turn * dt, diff))
 
         alignment = math.cos(diff)
         if self.panic:
@@ -1290,10 +1357,15 @@ class AutoWalker:
             # Calm is a stroll; unease quickens the step.
             speed = MOVE_SPEED * (0.78 + 0.35 * p.fear)
             speed *= max(0.0, alignment) if abs(diff) < 1.5 else 0.0
+            # A calm walker's gaze drifts gently off his heading — the
+            # slow pan of someone filming as he explores.
+            if p.fear < 0.3 and self.heard_t <= 0:
+                p.head_target = 0.3 * math.sin(
+                    p.bob_phase * 0.19 + self.gaze_seed)
         if p.crouched():
             speed = min(speed, MOVE_SPEED * 0.55)
-        p.want_vx = math.cos(p.angle) * speed
-        p.want_vy = math.sin(p.angle) * speed
+        p.want_vx = math.cos(p.body) * speed
+        p.want_vy = math.sin(p.body) * speed
 
 
 def load_bacteria_frames(pygame_module):
@@ -2619,7 +2691,8 @@ def move_to_zone(world: World, player: Player, zone: str) -> None:
     if best:
         _, x, y = best
         player.x, player.y, player.z = x + 0.5, y + 0.5, 0.0
-        player.angle = math.atan2(ty - y, tx - x)
+        player.body = player.angle = math.atan2(ty - y, tx - x)
+        player.head_off = player.head_target = 0.0
 
 
 def export_map(world: World, level: int, path: str) -> None:
@@ -2836,14 +2909,15 @@ def main(argv=None):
                 keys = pygame.key.get_pressed()
                 turn = ((keys[pygame.K_RIGHT] or keys[pygame.K_e])
                         - (keys[pygame.K_LEFT] or keys[pygame.K_q]))
-                player.angle += turn * TURN_SPEED * dt
+                player.body += turn * TURN_SPEED * dt
+                player.head_target = 0.0
                 fwd = keys[pygame.K_w] - keys[pygame.K_s]
                 strafe = keys[pygame.K_d] - keys[pygame.K_a]
                 run = keys[pygame.K_LSHIFT] or keys[pygame.K_RSHIFT]
                 player.running = bool(run and (fwd or strafe))
                 if fwd or strafe:
-                    dx = math.cos(player.angle) * fwd - math.sin(player.angle) * strafe
-                    dy = math.sin(player.angle) * fwd + math.cos(player.angle) * strafe
+                    dx = math.cos(player.body) * fwd - math.sin(player.body) * strafe
+                    dy = math.sin(player.body) * fwd + math.cos(player.body) * strafe
                     mag = math.hypot(dx, dy) or 1.0
                     speed = MOVE_SPEED * (1.45 if player.running else 1.0)
                     if player.crouched():
@@ -2853,8 +2927,8 @@ def main(argv=None):
                 else:
                     player.want_vx = player.want_vy = 0.0
                 # Manual crouch anticipation: duck when the cell ahead is low.
-                ahead_x = int(player.x + math.cos(player.angle) * 1.2)
-                ahead_y = int(player.y + math.sin(player.angle) * 1.2)
+                ahead_x = int(player.x + math.cos(player.body) * 1.2)
+                ahead_y = int(player.y + math.sin(player.body) * 1.2)
                 af, ac, _, _ = world.cell(ahead_x, ahead_y)
                 player.crouch_hint = 0 < ac - af < 0.8
             player.apply(world, dt, WALKER_MAX_DROP if auto else None)
@@ -2875,7 +2949,9 @@ def main(argv=None):
                 walker = AutoWalker(rng)
             if player.fell and fade < 0.6:
                 new_p = spawn(world, rng)
-                player.x, player.y, player.angle = new_p.x, new_p.y, new_p.angle
+                player.x, player.y = new_p.x, new_p.y
+                player.body = player.angle = new_p.angle
+                player.head_off = player.head_target = 0.0
                 player.z = player.vz = 0.0
                 player.vx = player.vy = player.want_vx = player.want_vy = 0.0
                 player.fell = False
