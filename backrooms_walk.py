@@ -801,32 +801,72 @@ class World:
                 if built:
                     break
 
+    # Thin upper-wall conduit variations (offset, height, radius, mat) —
+    # these may change per ~9-cell wall block. The FAT runs never do.
+    PIPE_PROFILES = (
+        ((0.08, 0.74, 0.035, 7),),
+        ((0.08, 0.70, 0.05, 7), (0.06, 0.80, 0.025, 7)),
+        ((0.06, 0.76, 0.03, 7),),
+        (),
+    )
+
     def _add_pipes(self, rng):
-        """Level 2: pipe runs hugging the walls just under the ceiling,
-        with occasional floor-to-ceiling risers. Decorative geometry (GL
-        renderer) — no collision, and safe from the Shift because Level 2
-        canonically does not shift. Heights are staggered per wall side
-        so parallel runs read as separate lines, not one thick slab."""
+        """Level 2, per the wiki photos: 'pipes and machines cover one or
+        both walls floor-to-ceiling'. Racked walls carry two fat
+        canvas-wrapped trunk lines at waist and chest height that run
+        CONTINUOUSLY down the whole wall (whether a wall is racked at all
+        is decided per wall line, so bundles never pop in and out), thin
+        steel conduit varying per stretch above, risers at corners, and a
+        bundle overhead in corridors. Decor geometry (GL renderer); safe
+        from the Shift because Level 2 canonically does not shift."""
         self.pipes = {}
         if not STYLE.get("pipes"):
             return
+        P = self.PIPE_PROFILES
+
+        def prof(k):
+            return P[k % len(P)]
+
+        def racked(k):
+            return k % 3 != 0        # two of three wall lines carry racks
+
         for (x, y) in sorted(self.open_set):
             f, c = self.floor[y][x], self.ceil[y][x]
             if f != 0.0 or c - f < 0.6:
                 continue
             runs = []
+
+            def rack(axis, key, blk, mirror):
+                out = []
+                if racked(key):
+                    out += [(axis, 0.18, 0.30, 0.12, 8),
+                            (axis, 0.16, 0.55, 0.08, 8)]
+                out += [(axis, o, h, r, m) for (o, h, r, m) in prof(blk)]
+                if mirror:
+                    out = [(a, 1.0 - o, h, r, m) for (a, o, h, r, m) in out]
+                return [(a, o, min(h, c - r - 0.02), r, m)
+                        for (a, o, h, r, m) in out]
+
             if self.solid(x, y - 1):
-                runs.append(("x", 0.10, c - 0.13))
-                if (x * 7 + y * 13) % 11 == 0:
-                    runs.append(("v", 0.10, 0.10))
+                runs += rack("x", y * 31 + 1, y * 31 + (x // 9) * 7, False)
             if self.solid(x, y + 1):
-                runs.append(("x", 0.90, c - 0.20))
+                runs += rack("x", y * 31 + 2, y * 31 + (x // 9) * 7 + 3, True)
             if self.solid(x - 1, y):
-                runs.append(("y", 0.10, c - 0.27))
+                runs += rack("y", x * 17 + 1, x * 17 + (y // 9) * 5 + 1, False)
             if self.solid(x + 1, y):
-                runs.append(("y", 0.90, c - 0.13))
-                if (x * 5 + y * 17) % 13 == 0:
-                    runs.append(("v", 0.90, 0.90))
+                runs += rack("y", x * 17 + 2, x * 17 + (y // 9) * 5 + 4, True)
+            # floor-to-ceiling risers where a rack meets a wall corner
+            if self.solid(x, y - 1) and (x * 7 + y * 13) % 17 == 0:
+                runs.append(("v", 0.12, 0.12, 0.05, 7))
+            if self.solid(x + 1, y) and (x * 5 + y * 11) % 19 == 0:
+                runs.append(("v", 0.88, 0.88, 0.04, 7))
+            # the ceiling of a corridor is its own pipe chase
+            if self.solid(x, y - 1) and self.solid(x, y + 1):
+                runs.append(("x", 0.42, c - 0.08, 0.045, 7))
+                runs.append(("x", 0.60, c - 0.11, 0.06, 8))
+            elif self.solid(x - 1, y) and self.solid(x + 1, y):
+                runs.append(("y", 0.42, c - 0.08, 0.045, 7))
+                runs.append(("y", 0.60, c - 0.11, 0.06, 8))
             if runs:
                 self.pipes[(x, y)] = runs
 

@@ -429,6 +429,22 @@ def build_textures(ctx, pygame_module):
         pipe.fill((92, 64, 44), (x, y0, rng.randint(1, 2), rng.randint(12, 40)))
     surfs.append(pipe)
 
+    # 8: wrapped insulation — dirty pale canvas over the fat trunk lines
+    # (the Level 2 photo signature). Wrap seams ring the run; grime
+    # blotches where hands and years have been.
+    ins_c = (172, 162, 140)
+    ins = new(ins_c)
+    speckle(ins, ins_c, 2400, 3, 14, 3)
+    for x0 in range(0, size, 40):
+        ins.fill(tuple(max(0, c - 24) for c in ins_c), (x0, 0, 3, size))
+    for _ in range(10):
+        bx_ = rng.randrange(size)
+        by_ = rng.randrange(size)
+        ins.fill(tuple(max(0, c - rng.randint(14, 30)) for c in ins_c),
+                 (bx_, by_, min(rng.randint(20, 70), size - bx_),
+                  min(rng.randint(8, 24), size - by_)))
+    surfs.append(ins)
+
     data = b"".join(
         pygame_module.image.tobytes(s, "RGBA") for s in surfs)
     tex = ctx.texture_array((size, size, len(surfs)), 4, data)
@@ -533,11 +549,11 @@ class WorldMesh:
                      nrm, mat, (sh_b, sh_b, 1.0, 1.0))
 
         def pipe_run(kind, args_, f, c, x, y):
-            """One pipe segment as a thin 4-sided box, mat 7. Runs are
-            extended a hair past the cell so joints never gap."""
-            r = 0.045
+            """One pipe segment as a 4-sided box. Radius and material come
+            from the run (fat wrapped trunks vs thin steel conduit). Runs
+            are extended a hair past the cell so joints never gap."""
             if kind == "v":
-                ox, oz = args_
+                ox, oz, r, m = args_
                 px_, pz_ = x + ox, y + oz
                 b0, b1 = f + 0.001, c - 0.001
                 faces = (
@@ -552,21 +568,26 @@ class WorldMesh:
                 )
                 for p1, p2, p3, p4, nn in faces:
                     quad(p1, p2, p3, p4,
-                         ((b0, 0), (b0, 0.9), (b1, 0.9), (b1, 0)), nn, 7)
+                         ((b0, 0), (b0, 0.9), (b1, 0.9), (b1, 0)), nn, m)
                 return
-            off, hh = args_
+            off, hh, r, m = args_
+            run_key = (kind,) + tuple(args_)
             if kind == "x":
                 a0, a1 = x - 0.005, x + 1.005
+                nb0, nb1 = (x - 1, y), (x + 1, y)
 
                 def P(u_, s_, t_):
                     return (u_, hh + t_, y + off + s_)
                 n_side = ((0, 0, -1), (0, 0, 1))
+                cap_n = ((-1, 0, 0), (1, 0, 0))
             else:
                 a0, a1 = y - 0.005, y + 1.005
+                nb0, nb1 = (x, y - 1), (x, y + 1)
 
                 def P(u_, s_, t_):
                     return (x + off + s_, hh + t_, u_)
                 n_side = ((-1, 0, 0), (1, 0, 0))
+                cap_n = ((0, 0, -1), (0, 0, 1))
             faces = (
                 (P(a0, -r, r), P(a1, -r, r), P(a1, r, r), P(a0, r, r), (0, 1, 0)),
                 (P(a0, -r, -r), P(a1, -r, -r), P(a1, r, -r), P(a0, r, -r), (0, -1, 0)),
@@ -575,7 +596,17 @@ class WorldMesh:
             )
             for p1, p2, p3, p4, nn in faces:
                 quad(p1, p2, p3, p4,
-                     ((a0, 0), (a1, 0), (a1, 0.9), (a0, 0.9)), nn, 7)
+                     ((a0, 0), (a1, 0), (a1, 0.9), (a0, 0.9)), nn, m)
+            # cap any cut end (wall stopped, profile handover, ceiling
+            # step) so a truncated run reads as a capped pipe, not a
+            # hollow box floating in the dark
+            if r >= 0.05:
+                for nb, a_end, nn in ((nb0, a0, cap_n[0]), (nb1, a1, cap_n[1])):
+                    if run_key not in pipes_map.get(nb, ()):
+                        quad(P(a_end, -r, -r), P(a_end, r, -r),
+                             P(a_end, r, r), P(a_end, -r, r),
+                             ((0, 0), (0.2, 0), (0.2, 0.2), (0, 0.2)), nn, m,
+                             (0.55, 0.55, 0.55, 0.55))
 
         pipes_map = getattr(w, "pipes", {})
         x_lo, x_hi = cx * CHUNK, min((cx + 1) * CHUNK, w.cols)
@@ -604,7 +635,7 @@ class WorldMesh:
                 quad((x, c, y + 1), (x + 1, c, y + 1), (x + 1, c, y), (x, c, y),
                      uv, (0, -1, 0), mat)
                 for run in pipes_map.get((x, y), ()):
-                    pipe_run(run[0], run[1:], f, c, x, y)
+                    pipe_run(run[0], tuple(run[1:]), f, c, x, y)
                 # walls to the 4 neighbors
                 for dx, dy, nrm, seg in (
                         (1, 0, (-1, 0, 0), ((x + 1, y + 1), (x + 1, y))),
