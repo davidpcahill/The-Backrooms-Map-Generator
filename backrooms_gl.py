@@ -511,30 +511,38 @@ class WorldMesh:
                     if outside:
                         nf, nc = 0.0, 0.0   # beyond the border: sealed
                     (ax, az), (bx, bz) = seg
-                    # my floor heights at the two shared corners
+                    # THE RULE (one rule, no special cases): this cell seals
+                    # its own edge. The shared open window between me and
+                    # the neighbor is [max(floors), min(ceils)]; I draw my
+                    # edge face everywhere outside that window, inset a
+                    # hair into my own cell. Both cells do this
+                    # independently, so a viewable edge without a wall
+                    # cannot exist — regardless of chunks, shifts, or
+                    # which neighbor changed.
+                    ix, iz = ax + nrm[0] * 0.003, az + nrm[2] * 0.003
+                    jx, jz = bx + nrm[0] * 0.003, bz + nrm[2] * 0.003
                     ma = fh(x, y, ax, az)
                     mb = fh(x, y, bx, bz)
-                    if nf >= nc:
-                        # full wall face of the solid neighbor
-                        e0 = min(ma, mb) - 0.02
-                        wall(ax, az, bx, bz, e0, c, nrm, min(ma, mb))
+                    my_lo = min(ma, mb)
+                    if nf >= nc:        # solid (or border): full face
+                        wall(ix, iz, jx, jz, my_lo - 0.02, c, nrm, my_lo)
                     else:
-                        # floor-height seal: ONE oversized rectangle
-                        # covering the entire mismatch across this edge
-                        # (steps, ramp seams, pit rims — all of it).
-                        # Owned by the lower cell so it's emitted once.
                         ta = fh(x + dx, y + dy, ax, az)
                         tb = fh(x + dx, y + dy, bx, bz)
-                        lo = min(ma, mb, ta, tb)
-                        hi = max(ma, mb, ta, tb)
-                        mine_lower = (min(ma, mb), x, y) <= (min(ta, tb), x + dx, y + dy)
-                        if hi - lo > 0.004 and mine_lower:
-                            deep = lo <= bw.PIT_FLOOR + 0.01 and hi - lo > 1.2
-                            wall(ax, az, bx, bz, lo - 0.015,
-                                 min(hi + 0.015, c), nrm, lo, pit=deep)
-                        # upper step: neighbor ceiling lower than mine
-                        if nc < c - 0.003:
-                            wall(ax, az, bx, bz, nc, c, nrm, min(ma, mb))
+                        win_lo = max(ma, mb, ta, tb)
+                        win_hi = min(c, nc)
+                        if win_hi <= win_lo:            # no shared opening
+                            wall(ix, iz, jx, jz, my_lo - 0.02, c, nrm, my_lo)
+                        else:
+                            # bottom skirt: my floor up to the window
+                            if win_lo - my_lo > 0.045:
+                                deep = (my_lo <= bw.PIT_FLOOR + 0.01
+                                        and win_lo - my_lo > 1.2)
+                                wall(ix, iz, jx, jz, my_lo - 0.02,
+                                     win_lo + 0.01, nrm, my_lo, pit=deep)
+                            # top skirt: the window up to my ceiling
+                            if c - win_hi > 0.003:
+                                wall(ix, iz, jx, jz, win_hi, c, nrm, my_lo)
 
         key = (cx, cy)
         old = self.chunks.pop(key, None)

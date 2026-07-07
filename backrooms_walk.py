@@ -112,8 +112,17 @@ STYLES = {
         light_panel=(255, 252, 224), carpet=(177, 157, 112),
         pit_shaft=(58, 50, 32), pit_bottom=(8, 7, 4), fog=(24, 20, 8),
         hum_freq=120, ceil_norm=1.0,
-        tall=(3, 5), tall_h=(1.8, 3.4), crawl=(2, 4), sunken=(2, 3),
-        pits=(1, 2), blackouts=(1, 2), raked=(1, 2), ramp_chance=0.5,
+        # sunken=(0,0): terraced bowls looked like broken rendering from
+        # inside, every time, no matter how correct the mesh was. Level 0
+        # keeps pits and raked floors; proper staircases can come back
+        # later as a controlled corridor feature.
+        # Level 0's floor is DEAD FLAT — which is the canon. Every floor
+        # feature tried here (terraced wings, pit lattices, raked tilts)
+        # read as broken rendering at first-person grazing angles. Its
+        # verticality lives in the CEILINGS: tall halls, crawlspaces,
+        # soffits, pillars. Those work.
+        tall=(3, 5), tall_h=(1.8, 3.4), crawl=(2, 4), sunken=(0, 0),
+        pits=(0, 0), blackouts=(1, 2), raked=(0, 0), ramp_chance=0.5,
         panel=lambda x, y: x % 2 == 1 and y % 3 == 1, panel_prob=0.7,
         gen=dict(rooms=4, pillar_rooms=3, poly_rooms=3),
         drips=False,
@@ -602,8 +611,8 @@ class World:
                 if self.ceil[y][x] <= 0 or self.floor[y][x] != 0.0:
                     continue
                 off = sx * (x - cx) + sy * (y - cy)
-                self.floor[y][x] = max(-0.35, min(0.35, off))
-                if abs(off) < 0.35:
+                self.floor[y][x] = max(-0.2, min(0.2, off))
+                if abs(off) < 0.2:
                     self.gx[y][x] = sx
                     self.gy[y][x] = sy
 
@@ -611,9 +620,13 @@ class World:
         for _ in range(rng.randint(*STYLE["pits"])):
             blob = self._blob(rng, rng.randint(120, 350), rooms_only=True)
             for x, y in blob:
-                if self.ceil[y][x] > 0 and x % 3 != 0 and y % 3 != 0:
+                # 1x1 holes on a 3-cell lattice: mostly floor, punctuated
+                # by black square shafts. (2x2 holes left more void than
+                # walkway and read as broken geometry, not as pits.)
+                if self.ceil[y][x] > 0 and x % 3 == 1 and y % 3 == 1:
                     if self.floor[y][x] == 0.0:
                         self.floor[y][x] = PIT_FLOOR
+                        self.light[y][x] = 0.1   # nothing lights a shaft
 
     def _add_blackouts(self, rng):
         for _ in range(rng.randint(*STYLE["blackouts"])):
