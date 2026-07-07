@@ -614,26 +614,41 @@ class Camcorder:
 
     def update(self, dt, p, walker, world):
         self.shake_t += dt
-        # Investigate-zoom: he heard something, he's looking — punch in.
+        # The zoom only ever punches down an actual sightline: zooming
+        # into a wall two meters away is how you film drywall, not how
+        # you check the dark. sight_dist says what the shot is worth.
+        sl = bw.sight_dist(world, p.x, p.y, p.angle, 18.0)
+        # Investigate-zoom: he heard something, he's looking — punch in
+        # as far as the view actually runs toward the sound.
         investigating = (getattr(walker, "look", 0) > 0
                          or (p.presence_heard and not p.presence_seen))
         if p.fear > 0.55:
             self.zoom_target = 1.0           # no one zooms while running
             self.hold = 0.0
         elif investigating:
-            self.zoom_target = 2.4
+            self.zoom_target = max(1.1, min(2.6, 0.7 + sl * 0.16))
             self.hold = 0.6
         elif self.hold > 0:
             self.hold -= dt
-            if self.hold <= 0:
+            # the view closed off mid-zoom (he turned, a wall slid in):
+            # pull back out instead of filming wallpaper at 3x
+            if self.zoom_target > 1.6 and sl < 4.0:
+                self.zoom_target = 1.0
+                self.hold = 0.0
+            elif self.hold <= 0:
                 self.zoom_target = 1.0
         else:
             self.scan_timer -= dt
             if self.scan_timer <= 0:
-                # Curiosity: zoom down whatever is ahead to see more.
-                self.scan_timer = self.rng.uniform(14.0, 34.0)
-                self.zoom_target = self.rng.uniform(1.8, 3.1)
-                self.hold = self.rng.uniform(1.2, 2.4)
+                if sl >= 8.0:
+                    # a corridor worth checking: zoom scales with how
+                    # deep the view goes
+                    self.scan_timer = self.rng.uniform(14.0, 34.0)
+                    self.zoom_target = min(3.1, 1.0 + sl * 0.13)
+                    self.hold = self.rng.uniform(1.2, 2.4)
+                else:
+                    # nothing but wall out there right now; try again soon
+                    self.scan_timer = self.rng.uniform(3.0, 7.0)
 
         rate = 3.2 if self.zoom_target > self.zoom else 2.0
         self.zoom += (self.zoom_target - self.zoom) * min(1.0, rate * dt)
@@ -1058,6 +1073,9 @@ def main(argv=None):
             agents.append((presence.x, presence.y, "presence"))
         for kind, dx_, dy_ in world.update_doors(dt, agents):
             audio.play_door(kind, dx_, dy_, player)
+            # a slam around a corner is a real, hearable event
+            player.hear_sound(world, dx_ + 0.5, dy_ + 0.5,
+                              2.6 if kind == "slam" else 0.7)
 
         # hum follows the nearest live panel; echoes follow the room size
         hum_scan -= dt

@@ -961,10 +961,37 @@ class Player:
         self.exertion = 0.0      # builds while running, recovers while walking
         self.crouch_hint = False  # controller sees a low ceiling coming up
         self.running = False
-        self.presence_bearing = None   # perception of the thing, if any
+        self.presence_bearing = None   # ground truth (audio panning etc.)
         self.presence_dist = None
         self.presence_seen = False
         self.presence_heard = False
+        # Stimulus-driven hearing: no radar. hear_sound() registers real
+        # sound events; these hold what he actually NOTICED.
+        self.heard_timer = 0.0       # how recently something registered
+        self.heard_str = 0.0         # how loud the last thing he heard was
+        self.heard_bearing = None    # where he THINKS it came from (noisy)
+        self.percept_bearing = None  # best belief: sight, else last sound
+
+    def hear_sound(self, world, sx, sy, loud):
+        """A discrete sound happened at (sx, sy). Whether he notices
+        depends on loudness, distance, walls in the way, and how much
+        noise he himself is making — running feet and ragged breathing
+        drown out a distant footstep. Standing still, he hears farther."""
+        dx, dy = world.wrap_delta(self.x, self.y, sx, sy)
+        dist = math.hypot(dx, dy)
+        muffle = 1.0 if line_of_sight(world, self.x, self.y, sx, sy) else 0.38
+        audible = loud * muffle / (1.0 + dist * 0.14)
+        moving = math.hypot(self.vx, self.vy)
+        mask = 0.45 if self.running else (0.18 if moving > 0.5 else 0.02)
+        strength = audible - mask
+        if strength <= 0.20:
+            return                       # he simply never heard it
+        s = min(1.0, strength)
+        err = (1.0 - s) * 0.55           # faint sounds are hard to place
+        self.heard_bearing = (math.atan2(dy, dx)
+                              + random.uniform(-err, err))
+        self.heard_str = max(self.heard_str, s)
+        self.heard_timer = 2.0 + 2.0 * s
 
     def eye_z(self):
         return self.z + self.eye + self.bob
@@ -1065,6 +1092,10 @@ class Player:
         self.bob = math.sin(self.bob_phase) * amp * min(ratio, 1.0)
         self.sway = math.sin(self.bob_phase * 0.5) * 0.009 * min(ratio, 1.0)
 
+        # What he heard fades: the memory of a sound loses its grip.
+        self.heard_timer = max(0.0, self.heard_timer - dt)
+        self.heard_str = max(0.0, self.heard_str - dt * 0.35)
+
         # Head: fast toward its target, clamped to over-the-shoulder
         # range. The camera is the head; the feet are the body.
         tgt = max(-2.75, min(2.75, self.head_target))
@@ -1102,8 +1133,22 @@ class AutoWalker:
         self.scan_cd = rng.uniform(15.0, 35.0)
         self.pause_total = 0.0
         self.sweep_amp = 1.0     # head sweep amplitude during a scan
-        self.gaze_seed = rng.uniform(0.0, math.tau)
         self.seen_feats = deque(maxlen=4)   # features already visited
+        self.glance_cd = rng.uniform(4.0, 10.0)
+        self.glance_t = 0.0      # active glance hold time
+        self.glance_off = 0.0    # head offset of the current glance
+
+    def _pick_glance(self, world, p):
+        """Something worth looking at: the longest off-axis sightline —
+        a side corridor, a doorway, an opening. Returns a head offset,
+        or None when there's nothing but wall nearby."""
+        best, best_d = None, 4.5
+        for off in (-1.9, -1.2, -0.7, 0.7, 1.2, 1.9):
+            d = sight_dist(world, p.x, p.y, p.body + off, 13.0)
+            d *= self.rng.uniform(0.8, 1.2)
+            if d > best_d:
+                best, best_d = off, d
+        return best
 
     def plan(self, world: World, p: Player, flee_from=None):
         start = (int(p.x) % world.cols, int(p.y) % world.rows)
@@ -1221,7 +1266,7 @@ class AutoWalker:
         # holds until the camera is genuinely AIMED at it, then dwells a
         # beat before whipping back.
         self.look_cd -= dt
-        if self.look <= 0 and p.presence_bearing is not None and self.look_cd <= 0:
+        if self.look <= 0 and p.percept_bearing is not None and self.look_cd <= 0:
             if self.panic:
                 self.look = 0.9                  # quick, snatched glance
                 self.look_dwell = 0.28
@@ -1230,14 +1275,15 @@ class AutoWalker:
                 self.look = 1.6
                 self.look_dwell = 0.45
                 self.look_cd = self.rng.uniform(6.0, 12.0)
-        if self.look > 0 and p.presence_bearing is not None:
+        if self.look > 0 and p.percept_bearing is not None:
             self.look -= dt
-            # The HEAD whips toward the bearing — over the shoulder, up to
-            # its clamp — while the BODY keeps carrying him down the route.
-            # He is never running backwards; he is running and LOOKING.
-            off = (p.presence_bearing - p.body + math.pi) % math.tau - math.pi
+            # The HEAD whips toward where he BELIEVES it is — the true
+            # bearing if he can see it, the (noisy) direction of the last
+            # sound if he can't — while the BODY keeps carrying him down
+            # the route. Never running backwards; running and LOOKING.
+            off = (p.percept_bearing - p.body + math.pi) % math.tau - math.pi
             p.head_target = off
-            aim = (p.presence_bearing - p.angle + math.pi) % math.tau - math.pi
+            aim = (p.percept_bearing - p.angle + math.pi) % math.tau - math.pi
             # On target — or twisted as far as a neck goes — hold the shot.
             if abs(aim) < 0.14 or (abs(off) > 2.7 and abs(p.head_off) > 2.55):
                 self.look_dwell -= dt
@@ -1252,8 +1298,8 @@ class AutoWalker:
                 d = math.hypot(dx, dy) or 1.0
                 if self.panic:
                     speed = MOVE_SPEED * 1.5
-                elif p.presence_dist is not None and p.presence_dist < 6.0:
-                    speed = 0.0                  # it's RIGHT there. freeze.
+                elif p.heard_str > 0.65 and not p.presence_seen:
+                    speed = 0.0    # that was LOUD — close. Freeze. Listen.
                 else:
                     speed = MOVE_SPEED * 0.55
                 # The body steers toward the route and the FEET move the
@@ -1274,13 +1320,18 @@ class AutoWalker:
             if self.look > 0:
                 return
 
+        # He flees from where he BELIEVES it is. Sight gives him the real
+        # position; sound gives an estimate down the noisy bearing, closer
+        # for louder. Panic with no information at all is just running.
         flee = None
-        if self.panic and presence is not None:
-            flee = (presence.x, presence.y)
-        elif (presence is not None and self.seen_t > 0
-                and p.presence_dist is not None and p.presence_dist < 16.0):
-            # He saw it recently: even below panic, routes bias AWAY.
-            flee = (presence.x, presence.y)
+        if presence is not None:
+            if self.seen_t > 0 and (self.panic or (
+                    p.presence_dist is not None and p.presence_dist < 16.0)):
+                flee = (presence.x, presence.y)
+            elif self.panic and p.heard_bearing is not None:
+                est = 3.0 + 9.0 * (1.0 - p.heard_str)
+                flee = (p.x + math.cos(p.heard_bearing) * est,
+                        p.y + math.sin(p.heard_bearing) * est)
 
         self.repath_timer -= dt
         if self.repath_timer <= 0 or self.idx >= len(self.path):
@@ -1310,14 +1361,14 @@ class AutoWalker:
 
         # NEVER keep walking toward something he has seen. If the route's
         # next leg closes on it, drop the route and plan away right now.
-        if (self.seen_t > 0 and p.presence_bearing is not None
+        if (self.seen_t > 0 and p.percept_bearing is not None
                 and p.presence_dist is not None and p.presence_dist < 16.0
                 and self.idx < len(self.path)):
             cx, cy = self.path[self.idx]
             dx, dy = world.wrap_delta(p.x, p.y, cx + 0.5, cy + 0.5)
             d = math.hypot(dx, dy) or 1.0
-            toward = (math.cos(p.presence_bearing) * dx / d
-                      + math.sin(p.presence_bearing) * dy / d)
+            toward = (math.cos(p.percept_bearing) * dx / d
+                      + math.sin(p.percept_bearing) * dy / d)
             if toward > 0.45:
                 self.plan(world, p, (presence.x, presence.y))
                 if not self.path:
@@ -1357,11 +1408,22 @@ class AutoWalker:
             # Calm is a stroll; unease quickens the step.
             speed = MOVE_SPEED * (0.78 + 0.35 * p.fear)
             speed *= max(0.0, alignment) if abs(diff) < 1.5 else 0.0
-            # A calm walker's gaze drifts gently off his heading — the
-            # slow pan of someone filming as he explores.
+            # A calm walker's gaze is PURPOSEFUL: every so often he
+            # notices a real sightline — a side corridor, an opening —
+            # holds his camera on it for a beat, then comes back to the
+            # road. Between glances the camera stays steady. No metronome.
             if p.fear < 0.3 and self.heard_t <= 0:
-                p.head_target = 0.3 * math.sin(
-                    p.bob_phase * 0.19 + self.gaze_seed)
+                if self.glance_t > 0:
+                    self.glance_t -= dt
+                    p.head_target = self.glance_off
+                else:
+                    self.glance_cd -= dt
+                    if self.glance_cd <= 0:
+                        self.glance_cd = self.rng.uniform(7.0, 16.0)
+                        off = self._pick_glance(world, p)
+                        if off is not None:
+                            self.glance_off = off
+                            self.glance_t = self.rng.uniform(0.9, 1.7)
         if p.crouched():
             speed = min(speed, MOVE_SPEED * 0.55)
         p.want_vx = math.cos(p.body) * speed
@@ -1439,6 +1501,23 @@ def line_of_sight(world: World, ax, ay, bx, by) -> bool:
     return True
 
 
+def sight_dist(world: World, x, y, ang, max_d=16.0):
+    """How far the view runs before hitting something at eye height —
+    what a glance (or a zoom) down this direction is actually worth."""
+    ca, sa = math.cos(ang), math.sin(ang)
+    d = 0.0
+    while d < max_d:
+        d += 0.4
+        cx, cy = int(x + ca * d), int(y + sa * d)
+        f, c, _, _ = world.cell(cx, cy)
+        if f >= c or c - max(f, 0.0) < 0.5:
+            return d
+        door = world.doors.get((cx % world.cols, cy % world.rows))
+        if door and not door["open"]:
+            return d
+    return max_d
+
+
 class Presence:
     """Something is always somewhere in the level, and it is always walking
     toward you. It never runs. You hear it before you see it; you see it as
@@ -1457,6 +1536,7 @@ class Presence:
         self.idx = 0
         self.replan = 0.0
         self.stride = 0.0
+        self.growl_ping = 0.0
         self.lost = 0.0
         self.state = "stalk"     # stalk | lurk | hunt
         self.lurk_t = 0.0        # how long it's been stared at
@@ -1608,17 +1688,24 @@ class Presence:
             vis_range *= getattr(p, "zoom_boost", 1.0)
         los = dist < 24.0 and line_of_sight(world, p.x, p.y, self.x, self.y)
         seen = dist < vis_range and abs(rel) < 1.0 and los
-        heard = dist < 13.0
+        # Hearing is NOT radar: p.heard_* is only ever set by real sound
+        # events (its footsteps, screams, door slams) that survived
+        # distance, walls, and his own noise. See Player.hear_sound.
+        heard = p.heard_timer > 0.0
         threat = max(0.0, 1.0 - dist / 16.0)
         if seen:
             # SEEING it is never casual. Any confirmed sighting inside 14
             # cells breaks him outright; even a distant glimpse leaves him
             # badly rattled. Nobody calmly keeps walking toward that.
             target = max(threat, 0.7 if dist < 14.0 else 0.5)
+            # sight pins the source: no more guessing where it is
+            p.heard_bearing = bearing
         elif heard:
-            # Sound alone unnerves but rarely breaks him — he has to SEE
-            # it (or have it nearly on top of him) to run.
-            target = threat * (0.8 if dist < 4.0 else 0.42)
+            # Sound alone unnerves but rarely breaks him — fear tracks how
+            # LOUD it was, because loud means close.
+            target = 0.42 * min(1.0, p.heard_str * 1.5)
+            if dist < 4.0 and p.heard_str > 0.5:
+                target = max(target, 0.8)    # breathing down his neck
         else:
             target = 0.0
         xi, yi = int(p.x) % world.cols, int(p.y) % world.rows
@@ -1633,6 +1720,9 @@ class Presence:
         p.presence_dist = dist
         p.presence_seen = seen
         p.presence_heard = heard
+        # What he'd point a camera at: the thing if he can see it,
+        # otherwise where the last sound seemed to come from.
+        p.percept_bearing = bearing if seen else p.heard_bearing
 
         # --- Tension: horror is the build-up. Early on it only stalks —
         # holds its distance, lets itself be heard, shows itself in
@@ -1659,6 +1749,7 @@ class Presence:
                     p.fear = max(p.fear, 0.8)
                     if audio:
                         audio.play_scream(bearing, dist, p)
+                    p.hear_sound(world, self.x, self.y, 3.5)
                     # and the lights die in a wave, rolling from it toward
                     # him down its own path — the dark coming for you
                     self.wave = [(cell, 0.07 * i) for i, cell in
@@ -1730,6 +1821,10 @@ class Presence:
                 self.stride = max(0.34, 0.68 - speed * 0.09) * self.rng.uniform(0.95, 1.05)
                 if audio:
                     audio.presence_step(bearing, dist, p)
+                # every real footfall is a hearable event — hunting
+                # strides come down harder
+                p.hear_sound(world, self.x, self.y,
+                             1.6 if self.state == "hunt" else 1.05)
 
         # the hunt's darkness wave: lights die in sequence along its path
         if self.wave:
@@ -1755,6 +1850,12 @@ class Presence:
         self._light_disturbance(world, dt)
         if audio:
             audio.set_growl(dist, bearing, p)
+        # the low rolling growl is a real sound too: close by, it keeps
+        # re-registering — he can track it without ever seeing it
+        self.growl_ping -= dt
+        if dist < 5.5 and self.growl_ping <= 0:
+            self.growl_ping = 0.8
+            p.hear_sound(world, self.x, self.y, 0.9)
 
         return dist < 1.3
 
@@ -2968,6 +3069,9 @@ def main(argv=None):
             agents.append((presence.x, presence.y, "presence"))
         for kind, dx_, dy_ in world.update_doors(dt, agents):
             audio.play_door(kind, dx_, dy_, player)
+            # a slam around a corner is a real, hearable event
+            player.hear_sound(world, dx_ + 0.5, dy_ + 0.5,
+                              2.6 if kind == "slam" else 0.7)
 
         # The hum belongs to the nearest live light panel.
         hum_scan -= dt
