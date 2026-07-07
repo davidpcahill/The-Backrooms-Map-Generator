@@ -523,15 +523,22 @@ class World:
         # Hole-fill (speckles), absorb fringe strips, then absorb whole
         # ENCLOSED rooms — their ceilings would otherwise float unsupported.
         for _ in range(rng.randint(*STYLE["tall"])):
-            h = rng.uniform(*STYLE["tall_h"])
-            blob = self._fill_holes(self._blob(rng, rng.randint(150, 600)))
+            # every few halls, a CATHEDRAL: a vast chamber whose ceiling
+            # disappears upward — the awe beat between the corridors
+            cathedral = rng.random() < 0.3
+            if cathedral:
+                h = rng.uniform(3.8, 5.2)
+                blob = self._fill_holes(self._blob(rng, rng.randint(500, 900)))
+            else:
+                h = rng.uniform(*STYLE["tall_h"])
+                blob = self._fill_holes(self._blob(rng, rng.randint(150, 600)))
             blob = self._fill_holes(blob, min_n=4, passes=2)
             blob = self._absorb_enclaves(blob)
             for x, y in blob:
                 if self.ceil[y][x] > 0:
                     self.ceil[y][x] = h
             if h > 1.9:
-                spacing = rng.choice((6, 7, 8))
+                spacing = rng.choice((8, 9, 10)) if cathedral else rng.choice((6, 7, 8))
                 off = rng.randrange(spacing)
                 for x, y in blob:
                     if (x % spacing == off and y % spacing == off
@@ -663,7 +670,7 @@ class World:
         for _ in range(rng.randint(lo, hi)):
             for _try in range(16):
                 blob = self._fill_holes(
-                    self._blob(rng, rng.randint(300, 550), rooms_only=True))
+                    self._blob(rng, rng.randint(350, 700), rooms_only=True))
                 interior = {c for c in blob
                             if all((c[0] + dx, c[1] + dy) in blob
                                    for dx, dy in nbrs8)}
@@ -691,7 +698,7 @@ class World:
                     for xs, step in ((row[0], 1), (row[-1], -1)):
                         entry = (xs - step, y)
                         if (entry in blob and entry not in interior
-                                and built < 2):
+                                and built < 3):
                             ok_run = all((xs + step * i, y) in interior
                                          for i in range(8))
                             if not ok_run:
@@ -1137,6 +1144,8 @@ class AutoWalker:
         self.glance_cd = rng.uniform(4.0, 10.0)
         self.glance_t = 0.0      # active glance hold time
         self.glance_off = 0.0    # head offset of the current glance
+        self.invest_t = 0.0      # investigating a faint sound
+        self.invest_cd = 0.0
 
     def _pick_glance(self, world, p):
         """Something worth looking at: the longest off-axis sightline —
@@ -1333,6 +1342,22 @@ class AutoWalker:
                 flee = (p.x + math.cos(p.heard_bearing) * est,
                         p.y + math.sin(p.heard_bearing) * est)
 
+        # Curiosity with teeth: a faint, distant sound while calm isn't a
+        # reason to run — it's a reason to find out. He angles his
+        # wandering toward it and approaches slowly, camera first.
+        self.invest_cd = max(0.0, self.invest_cd - dt)
+        if (not self.panic and p.fear < 0.35 and self.invest_cd <= 0
+                and p.heard_timer > 0 and 0.0 < p.heard_str < 0.5
+                and p.heard_bearing is not None):
+            self.invest_t = self.rng.uniform(6.0, 11.0)
+            self.invest_cd = self.rng.uniform(25.0, 45.0)
+            self.explore_angle = p.heard_bearing
+            self.repath_timer = 0.0          # replan: drift toward it
+        if self.invest_t > 0:
+            self.invest_t -= dt
+            if p.fear > 0.5 or p.heard_str > 0.6:
+                self.invest_t = 0.0          # this stopped being curiosity
+
         self.repath_timer -= dt
         if self.repath_timer <= 0 or self.idx >= len(self.path):
             self.plan(world, p, flee)
@@ -1424,6 +1449,11 @@ class AutoWalker:
                         if off is not None:
                             self.glance_off = off
                             self.glance_t = self.rng.uniform(0.9, 1.7)
+            # Investigating: creep toward the sound, camera held on it.
+            if self.invest_t > 0 and p.heard_bearing is not None:
+                speed *= 0.65
+                off = (p.heard_bearing - p.body + math.pi) % math.tau - math.pi
+                p.head_target = max(-1.3, min(1.3, off))
         if p.crouched():
             speed = min(speed, MOVE_SPEED * 0.55)
         p.want_vx = math.cos(p.body) * speed
@@ -1558,7 +1588,12 @@ class Presence:
         # for five minutes, some it comes straight in. Tuned by simulated
         # time-to-death runs, not vibes.
         self.alive_t = 0.0
-        self.mood = rng.uniform(0.7, 1.45)
+        self.mood = rng.uniform(0.7, 1.25)
+        # ITS perception of HIM: it is not omniscient either. It tracks a
+        # BELIEF of where he is, refreshed only by seeing or hearing him;
+        # gone cold, it prowls the last known area, searching.
+        self.belief = (p.x, p.y)
+        self.contact_t = 0.0
         self.x, self.y = self._pick_spot(world, p, ahead)
 
     def _pick_spot(self, world, p, ahead):
@@ -1573,7 +1608,11 @@ class Presence:
         for _ in range(200):
             x, y = self.rng.choice(cells)
             d = math.hypot(*world.wrap_delta(p.x, p.y, x + 0.5, y + 0.5))
-            if 25 < d < 45 and world.floor[y % world.rows][x % world.cols] > -1.5:
+            # far away AND with no line of sight: it never pops into the
+            # world where he could see it happen
+            if (25 < d < 45
+                    and world.floor[y % world.rows][x % world.cols] > -1.5
+                    and not line_of_sight(world, p.x, p.y, x + 0.5, y + 0.5)):
                 return x + 0.5, y + 0.5
         x, y = self.rng.choice(cells)
         return x + 0.5, y + 0.5
@@ -1582,13 +1621,17 @@ class Presence:
         self.x, self.y = self._pick_spot(world, p, ahead=False)
         self.path = []
         self.lost = 0.0
+        self.belief = (p.x, p.y)
+        self.contact_t = 0.0
         # a kill (or an escape) resets the director's clock and mood
         self.alive_t = 0.0
-        self.mood = self.rng.uniform(0.7, 1.45)
+        self.mood = self.rng.uniform(0.7, 1.25)
 
     def _plan(self, world: World, p: Player):
+        # It walks to where it BELIEVES he is — not to his live position.
+        bx, by = self.belief
         start = (int(self.x) % world.cols, int(self.y) % world.rows)
-        goal = (int(p.x) % world.cols, int(p.y) % world.rows)
+        goal = (int(bx) % world.cols, int(by) % world.rows)
         prev = {start: None}
         queue = deque([start])
         found = start == goal
@@ -1669,8 +1712,8 @@ class Presence:
         """Perceive, decide, move. Returns True the moment it reaches him."""
         self.scream_cd = max(0.0, self.scream_cd - dt)
         self.alive_t += dt
-        # 0 for the first ~40s, full hunger by ~3.5 minutes (mood-scaled)
-        agg = max(0.0, min(1.0, (self.alive_t * self.mood - 40.0) / 170.0))
+        # 0 for the first ~55s, full hunger by ~5 minutes (mood-scaled)
+        agg = max(0.0, min(1.0, (self.alive_t * self.mood - 55.0) / 230.0))
 
         # --- Perception (his, of it). Not radar: seeing it requires line
         # of sight, facing it, AND enough light where it stands. Since it
@@ -1724,6 +1767,33 @@ class Presence:
         # otherwise where the last sound seemed to come from.
         p.percept_bearing = bearing if seen else p.heard_bearing
 
+        # --- ITS perception of HIM. Symmetric fairness: it only knows
+        # where he is when it can see him (the dark is its element — no
+        # light needed) or hear him — running is loud, walking carries
+        # less, and walls muffle. Otherwise its belief goes stale and it
+        # works the area like a hunter, not a GPS.
+        p_noise = 9.0 if p.running else (
+            5.5 if math.hypot(p.vx, p.vy) > 0.5 else 2.5)
+        contact = (los and dist < 20.0) or dist < p_noise * (1.0 if los else 0.55)
+        if contact:
+            self.belief = (p.x, p.y)
+            self.contact_t = 0.0
+        else:
+            self.contact_t += dt
+            b_dx, b_dy = world.wrap_delta(self.x, self.y, *self.belief)
+            if math.hypot(b_dx, b_dy) < 1.5 and self.contact_t > 1.0:
+                # arrived where he was; he isn't. Prowl outward from the
+                # cold trail — the search widens the longer it's blind.
+                r = min(4.0 + self.contact_t * 0.6, 14.0)
+                bx, by = self.belief
+                for _ in range(24):
+                    cx = int(bx + self.rng.uniform(-r, r)) % world.cols
+                    cy = int(by + self.rng.uniform(-r, r)) % world.rows
+                    if not world.solid(cx, cy):
+                        self.belief = (cx + 0.5, cy + 0.5)
+                        self.replan = 0.0
+                        break
+
         # --- Tension: horror is the build-up. Early on it only stalks —
         # holds its distance, lets itself be heard, shows itself in
         # glimpses. Time feeds it. Sightings feed it. Crowding it feeds
@@ -1772,6 +1842,13 @@ class Presence:
         else:
             self.lurk_t = 0.0
 
+        # Pacing distance: with contact, his true range; gone cold, the
+        # distance to its own stale belief — losing him no longer makes
+        # it magically faster the farther he actually gets.
+        if self.contact_t < 2.0:
+            pace = dist
+        else:
+            pace = math.hypot(*world.wrap_delta(self.x, self.y, *self.belief))
         if self.state == "hunt":
             speed = 2.3 + 0.55 * agg + (0.25 if p.exertion > 0.8 else 0.0)
         elif self.state == "lurk":
@@ -1782,12 +1859,12 @@ class Presence:
         elif shy:
             # Stalking phase: it closes to the edge of earshot and waits
             # there, pacing you. Footsteps in the dark. Nothing more. Yet.
-            speed = 0.0 if dist < 12.0 else \
-                1.1 + min(1.3, max(0.0, (dist - 13.0) * 0.11))
+            speed = 0.0 if pace < 12.0 else \
+                1.1 + min(1.3, max(0.0, (pace - 13.0) * 0.11))
         else:
             # Rubber-band stalk: farther away, it covers ground faster.
             speed = (1.25 + 0.35 * agg
-                     + min(1.3 + 0.5 * agg, max(0.0, (dist - 6.0) * 0.11)))
+                     + min(1.3 + 0.5 * agg, max(0.0, (pace - 6.0) * 0.11)))
 
         # --- Movement along its planned path
         self.replan -= dt
@@ -3041,22 +3118,18 @@ def main(argv=None):
                 fade = 1.2
         else:
             fade -= dt
-            if fade < 0.6 and caught:
-                # It reached him. Lights out — and he's somewhere else,
-                # heart pounding. Nothing is ever confirmed on Level 0.
-                presence.relocate(world, player)
-                player.fear = 0.5
+            if fade < 0.6 and (caught or player.fell):
+                # It reached him (or the floor did). Lights out — and he
+                # is somewhere ELSE: a whole new stretch of the level.
+                # Nothing is ever confirmed on Level 0.
+                world, player, rng = new_world(None)
+                seed = world.seed
+                walker = AutoWalker(rng)
+                lights_out = LightsOut(rng)
+                if presence is not None:
+                    presence = Presence(world, player, rng)
+                player.fear = 0.5 if caught else 0.0
                 caught = False
-                walker = AutoWalker(rng)
-            if player.fell and fade < 0.6:
-                new_p = spawn(world, rng)
-                player.x, player.y = new_p.x, new_p.y
-                player.body = player.angle = new_p.angle
-                player.head_off = player.head_target = 0.0
-                player.z = player.vz = 0.0
-                player.vx = player.vy = player.want_vx = player.want_vy = 0.0
-                player.fell = False
-                walker = AutoWalker(rng)
 
         if not args.no_shift:
             shift_timer -= dt

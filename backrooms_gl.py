@@ -557,7 +557,7 @@ class WorldMesh:
                         # border faces cap high — a low-ceiling cell at the
                         # map edge must not let taller neighbors see over
                         # its wall into the void
-                        top = max(c, 3.6) if outside else c
+                        top = max(c, 5.6) if outside else c   # cathedrals reach 5.2
                         wall(ix, iz, jx, jz, my_lo - 0.02, top, nrm, my_lo)
                     else:
                         ta = fh(x + dx, y + dy, ax, az)
@@ -943,6 +943,24 @@ def main(argv=None):
 
     light_np = np.zeros((world.rows, world.cols), dtype=np.float32)
 
+    def regen():
+        """A whole new stretch of the Backrooms: fresh seed, fresh maze,
+        fresh mesh. Death doesn't rewind the tape — it changes the room."""
+        nonlocal world, player, rng, seed, mesh, lg_tex, light_np
+        nonlocal walker, lights_out, presence, mm_surf
+        world, player, rng = new_world(None)
+        seed = world.seed
+        mesh = WorldMesh(ctx, scene_prog, world)
+        lg_tex.release()
+        lg_tex = ctx.texture((world.cols, world.rows), 1, dtype="f4")
+        lg_tex.filter = (0x2601, 0x2601)
+        light_np = np.zeros((world.rows, world.cols), dtype=np.float32)
+        walker = bw.AutoWalker(rng)
+        lights_out = bw.LightsOut(rng)
+        mm_surf = None
+        if presence is not None:
+            presence = bw.Presence(world, player, rng)
+
     running = True
     while running:
         dt = 1 / 30.0 if headless else min(clock.tick(60) / 1000.0, 0.05)
@@ -966,17 +984,7 @@ def main(argv=None):
                         Image.FLIP_TOP_BOTTOM).save(f"backrooms_gl_{seed}.png")
                     print(f"saved backrooms_gl_{seed}.png")
                 elif event.key == pygame.K_r:
-                    world, player, rng = new_world(None)
-                    seed = world.seed
-                    mesh = WorldMesh(ctx, scene_prog, world)
-                    lg_tex.release()
-                    lg_tex = ctx.texture((world.cols, world.rows), 1, dtype="f4")
-                    lg_tex.filter = (0x2601, 0x2601)
-                    light_np = np.zeros((world.rows, world.cols), dtype=np.float32)
-                    walker = bw.AutoWalker(rng)
-                    lights_out = bw.LightsOut(rng)
-                    if presence is not None:
-                        presence = bw.Presence(world, player, rng)
+                    regen()
 
         if args.test_death and death_t is None and t_now > 1.5:
             death_t = 0.0
@@ -998,18 +1006,10 @@ def main(argv=None):
                 player.eye = bw.EYE_STAND * (1 - k) + 0.10 * k
                 death_pitch = -0.85 * k
                 death_roll = 0.62 * k * death_roll_dir
-            if death_t > 2.55:      # tape cuts; somewhere else, later
-                np_ = bw.spawn(world, rng)
-                player.x, player.y = np_.x, np_.y
-                player.body = player.angle = np_.angle
-                player.head_off = player.head_target = 0.0
-                player.z = player.vz = 0.0
-                player.eye = bw.EYE_STAND
+            if death_t > 2.55:      # tape cuts; a DIFFERENT tape resumes
+                regen()             # new seed, new maze — no rewinds
                 player.fear = 0.5
-                presence.relocate(world, player)
-                presence.tension = 0.25     # it has had its fun. for now.
-                walker = bw.AutoWalker(rng)
-                blood_resid = 0.55
+                blood_resid = 0.35  # the lens remembers, faintly
                 death_pitch = 0.0
                 death_roll = 0.0
                 death_t = None
@@ -1050,13 +1050,7 @@ def main(argv=None):
         else:
             fade -= dt
             if player.fell and fade < 0.6:
-                np_ = bw.spawn(world, rng)
-                player.x, player.y = np_.x, np_.y
-                player.body = player.angle = np_.angle
-                player.head_off = player.head_target = 0.0
-                player.z = player.vz = 0.0
-                player.vx = player.vy = player.want_vx = player.want_vy = 0.0
-                player.fell = False
+                regen()             # the fall ends somewhere else entirely
                 walker = bw.AutoWalker(rng)
 
         if not args.no_shift:
