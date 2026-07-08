@@ -1,0 +1,46 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: pip install pygame-ce numpy pillow
+      - name: 2D generator renders a map
+        env: { SDL_VIDEODRIVER: dummy }
+        run: python backrooms_generator.py --seed 7 --save /tmp/map.png
+      - name: World gen + 60s simulated life (all levels)
+        env: { SDL_VIDEODRIVER: dummy }
+        run: |
+          python - <<'EOF'
+          import os, math, random
+          os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+          import backrooms_walk as bw
+          for lvl in ("0", "1", "2", "37", "run"):
+              bw.apply_style(lvl)
+              rng = random.Random(11)
+              w = bw.World(11, 100, 70); w.bounded = True
+              p = bw.spawn(w, rng)
+              walker = bw.AutoWalker(rng)
+              pres = bw.Presence(w, p, rng)
+              dt = 1 / 60
+              for _ in range(60 * 60):
+                  walker.update(w, p, dt, pres)
+                  p.apply(w, dt, bw.WALKER_MAX_DROP)
+                  if pres.update(w, p, dt, None) or p.fell:
+                      break
+              print(f"level {lvl}: ok ({len(w.open_set)} open cells)")
+          EOF
+      - name: CPU renderer records 2s of footage
+        env: { SDL_VIDEODRIVER: dummy }
+        run: python backrooms_walk.py --record /tmp/smoke.gif --seconds 2 --seed 5 --mute

@@ -1,9 +1,12 @@
 """Hole detector: renders the GL mesh depth from random poses and compares
 against analytic ray-marching of the World data. Any pixel where the mesh
 is significantly FARTHER than the analytic first-hit is a missing face —
-localized to the exact cell. Zero tolerance."""
+localized to the exact cell. Zero tolerance.
+
+Usage: python tools/hole_detector.py [SEED] [POSES]
+"""
 import sys, os, math, random
-sys.path.insert(0, __import__("os").path.dirname(__import__("os").path.dirname(__import__("os").path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np, moderngl, pygame
 os.environ['SDL_VIDEODRIVER'] = 'dummy'
 import backrooms_walk as bw, backrooms_gl as gl
@@ -102,7 +105,6 @@ for p_i in range(POSES):
     if p_i == 0:
         print('pose0 dist min/max:', float(draw.min()), float(draw.max()))
 
-    near, far = gl.NEAR, FAR + 10
     fwd = np.array([math.cos(yaw), 0, math.sin(yaw)])
     right = np.array([-fwd[2], 0, fwd[0]])
     up = np.array([0, 1, 0])

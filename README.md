@@ -1,4 +1,4 @@
-# The Backrooms Map Generator
+# backrooms
 
 Generates top-down maps that look like Level 0 of the Backrooms: endless
 overlapping corridors, arbitrarily placed rooms, pillar halls, and odd
@@ -41,8 +41,8 @@ python backrooms_gl.py --manual   # you hold the camera
 
 ![gl demo](examples/gl_walkthrough.gif)
 
-The pygame renderer below still works everywhere (no GPU needed) and
-remains what the packaged app uses for now.
+The pygame renderer below still works everywhere (no GPU needed); the
+packaged app ships the GL walkthrough.
 
 ## 3D walkthrough
 
@@ -305,17 +305,34 @@ spacing) live in the `Config` dataclass at the top of
 
 ## Standalone app
 
+Grab a prebuilt macOS app from the
+[releases page](https://github.com/davidpcahill/backrooms/releases), or
+build it yourself:
+
 ```bash
-./build_app.sh        # macOS: dist/The Backrooms.app (works on Win/Linux too)
+./build_app.sh        # macOS: dist/Backrooms.app (works on Win/Linux too)
 ```
 
-Bundles everything with PyInstaller, using an icon rendered by the engine
-itself ([assets/icon.png](assets/icon.png) — that's a real generated frame).
+Bundles the GL walkthrough with PyInstaller, using an icon rendered by
+the engine itself ([assets/icon.png](assets/icon.png) — that's a real
+generated frame).
+
+## Testing
+
+- `python tools/hole_detector.py [SEED] [POSES]` — the rendering
+  regression prover: renders eye-distance from random poses and compares
+  every pixel against analytic ray-marching of the world data. Any mesh
+  face that should exist but doesn't shows up as a named cell. Zero
+  tolerance; this is the tool that ended the see-through-walls era.
+- CI (GitHub Actions) smoke-tests the 2D generator, world generation +
+  a simulated life on every level, and the CPU renderer on each push.
 
 ## Ideas / contributions welcome
 
-- More levels (the Poolrooms, Level ! run corridor, Level 37)
-- Floor/ceiling texturing (currently flat-shaded planes)
+- Per-level creatures (the bake pipeline noted in CREDITS.md works for
+  any rigged model)
+- Machine-room prop dressing via the OBJ instancing pipeline
+- A real shadow map for the nearest light
 - Multiplayer isolation: two wanderers in the same map who can hear but
   never find each other (the canon Isolation Effect)
 

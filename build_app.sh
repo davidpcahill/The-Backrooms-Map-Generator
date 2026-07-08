@@ -1,22 +1,22 @@
 #!/bin/sh
-# Build a standalone app bundle for the Backrooms walkthrough.
+# Build the standalone Backrooms app (the GL found-footage walkthrough).
 #
-#   ./build_app.sh            # macOS: dist/The Backrooms.app
+#   ./build_app.sh            # macOS: dist/Backrooms.app
 #
 # Works on Windows/Linux too (icon and bundle format adapt automatically).
 set -e
 
-pip install pyinstaller pygame-ce numpy
+pip install pyinstaller pygame-ce numpy moderngl
 
 case "$(uname -s)" in
     Darwin) ICON="assets/icon.icns" ;;
     *)      ICON="assets/icon.png" ;;
 esac
 
-pyinstaller --noconfirm --windowed --name "The Backrooms" \
+pyinstaller --noconfirm --windowed --name "Backrooms" \
     --icon "$ICON" \
     --add-data "assets:assets" \
-    backrooms_walk.py
+    backrooms_gl.py
 
 echo
-echo "Done. Look in dist/ — on macOS: 'dist/The Backrooms.app'"
+echo "Done. Look in dist/ — on macOS: dist/Backrooms.app"
