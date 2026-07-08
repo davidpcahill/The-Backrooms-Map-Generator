@@ -44,6 +44,17 @@ Found-footage Backrooms sim: `backrooms_generator.py` (2D maps),
 
 - Per-level creatures: user has more rigged monster models; ask which
   file maps to which level, then reuse the Howler bake pipeline.
+  - SMILER (Level 2, user-picked 2026-07-08; he may still research L1):
+    candidates, both CC-BY 4.0, both rigged, download needs his
+    Sketchfab login (drop into ~/Downloads):
+    - PREFERRED: "Accurate Smiler" by Speed12, 5.9k tris —
+      https://skfb.ly/oAyYE (grab original .blend if offered)
+    - alt: "Backrooms Smiler Rig" by Flying_dragons800, 185.7k tris,
+      rough rig — sketchfab.com/3d-models/backrooms-smiler-rig-fed28f4534f94fcebd97db8e5b6e3ed4
+    Design: INVERSE of the Howler — bake emissive grin/eyes; visible
+    only in darkness (glow scales with 1-light), vanishes when lit or
+    zoomed at. Level 2 blackouts are the hunting ground. Presence gets
+    a per-style render/behavior variant rather than a new class.
 - Machine-room prop dressing via the OBJ instancing pipeline.
 - Real shadow map for the nearest light.
 - Isolation multiplayer (canon: two wanderers who hear but never meet).
