@@ -1,5 +1,8 @@
 # backrooms
 
+[![ci](https://github.com/davidpcahill/backrooms/actions/workflows/ci.yml/badge.svg)](https://github.com/davidpcahill/backrooms/actions/workflows/ci.yml)
+[![release](https://img.shields.io/github/v/release/davidpcahill/backrooms)](https://github.com/davidpcahill/backrooms/releases)
+
 Generates top-down maps that look like Level 0 of the Backrooms: endless
 overlapping corridors, arbitrarily placed rooms, pillar halls, and odd
 polygonal chambers. Built with Python and pygame.
@@ -69,7 +72,7 @@ Scale: 1 unit = one normal room height (~9 ft).
 
 | ![ramp](examples/ramp.png) | **Ramps & raked floors** — real sloped floors: smooth ramps down into sunken wings, and Kane Pixels-style "raked" areas where the whole floor leans a few degrees in one direction. Barely enough to notice; exactly enough to be wrong. |
 | ![level 1](examples/level1.png) | **Level 1** (`--level 1`) — the endless parking structure: formwork-lined concrete, pillar forests, rows of strip lighting, garage ramps everywhere, a deeper 60 Hz hum, and water dripping somewhere out of sight. |
-| ![level 2](examples/level2_pipes.png) | **Level 2 "Pipe Dreams"** (`--level 2`) — utility tunnels: long dark concrete runs, low ceilings, caged warm bulbs, steam-duct crawls. Canon says Level 2 doesn't shift — so here, it doesn't. |
+| ![level 2](examples/level2_pipes.png) | **Level 2 "Pipe Dreams"** (`--level 2`) — steam tunnels rebuilt from the wiki photos: racks of round trunk pipes (steel / old green paint / red-oxide) hugging the walls, flanged couplings, valve wheels, hissing steam vents, and machine rooms behind creaking doors. Canon says Level 2 doesn't shift — so here, it doesn't. |
 | ![level 37](examples/level37_poolrooms.png) | **Level 37 "Poolrooms"** (`--level 37`) — white tile, bright diffuse light, empty pools, water-colored haze. Almost nothing lives here. Almost. |
 | ![level !](examples/level_run.png) | **Level !** (`--level run`) — one long red-lit corridor. It spawns behind you, it never loses your trail, and it is faster than you can stay. Average life expectancy: under two minutes. **RUN.** |
 
