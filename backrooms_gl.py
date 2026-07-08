@@ -476,6 +476,22 @@ def build_textures(ctx, pygame_module):
         except Exception:
             surfs.append(new((90, 88, 86)))    # fallback: plain steel
 
+    # 12: machine housing — near-black steel cabinet, vent slats, rivets
+    mch_c = (38, 40, 42)
+    mch = new(mch_c)
+    speckle(mch, mch_c, 1200, 3, 10, 2)
+    for vy in range(40, 120, 12):              # vent slats
+        mch.fill((22, 23, 25), (48, vy, size - 96, 5))
+        mch.fill((58, 61, 64), (48, vy + 5, size - 96, 2))
+    for bx_ in range(10, size, 34):            # rivet rows top/bottom
+        for by_ in (12, size - 16):
+            mch.fill((70, 73, 78), (bx_, by_, 4, 4))
+    mch.fill((52, 55, 58), (0, 148, size, 3))  # a seam
+    for _ in range(8):                         # oil bleed
+        ox_ = rng.randrange(size)
+        mch.fill((20, 20, 20), (ox_, 151, rng.randint(2, 5), rng.randint(20, 70)))
+    surfs.append(mch)
+
     data = b"".join(
         pygame_module.image.tobytes(s, "RGBA") for s in surfs)
     tex = ctx.texture_array((size, size, len(surfs)), 4, data)
@@ -613,12 +629,15 @@ class WorldMesh:
             d = (*p4, *uvs[3], *n, mat, sh[3])
             emit(a); emit(b); emit(c); emit(a); emit(c); emit(d)
 
-        def wall(x0, z0, x1, z1, h0, h1, nrm, base_floor, pit=False):
+        def wall(x0, z0, x1, z1, h0, h1, nrm, base_floor, pit=False,
+                 mat_over=None):
             """Vertical wall from h0 (bottom) to h1 (top) along segment.
             Split at the trim height above base_floor; lower gets mat 5.
             Ends are extended slightly past the corners so the 3mm insets
             of adjacent faces overlap — otherwise rays can graze through
-            the diagonal micro-gap where two solid cells meet at a corner."""
+            the diagonal micro-gap where two solid cells meet at a corner.
+            mat_over paints the whole face one material (machine
+            housings), skipping the wallpaper/trim split."""
             if h1 - h0 < 1e-4:
                 return
             seg_l = math.hypot(x1 - x0, z1 - z0)
@@ -629,7 +648,9 @@ class WorldMesh:
             ulen = math.hypot(x1 - x0, z1 - z0)
             split = base_floor + TRIM_H
             mats = []
-            if pit:
+            if mat_over is not None:
+                mats = [(h0, h1, mat_over, None)]
+            elif pit:
                 mats = [(h0, h1, 4, None)]
             else:
                 if h0 < split:
@@ -792,6 +813,7 @@ class WorldMesh:
                          n=10 if r >= 0.08 else 8, u0=0.0)
 
         pipes_map = getattr(w, "pipes", {})
+        machines_set = getattr(w, "machines", set())
         x_lo, x_hi = cx * CHUNK, min((cx + 1) * CHUNK, w.cols)
         y_lo, y_hi = cy * CHUNK, min((cy + 1) * CHUNK, w.rows)
         for y in range(y_lo, y_hi):
@@ -849,7 +871,10 @@ class WorldMesh:
                         # map edge must not let taller neighbors see over
                         # its wall into the void
                         top = max(c, 5.6) if outside else c   # cathedrals reach 5.2
-                        wall(ix, iz, jx, jz, my_lo - 0.02, top, nrm, my_lo)
+                        wall(ix, iz, jx, jz, my_lo - 0.02, top, nrm, my_lo,
+                             mat_over=12 if (not outside
+                                             and (nxi, nyi) in machines_set
+                                             ) else None)
                     else:
                         ta = fh(x + dx, y + dy, ax, az)
                         tb = fh(x + dx, y + dy, bx, bz)
@@ -1657,6 +1682,8 @@ def main(argv=None):
             audio.set_hum_proximity(
                 bw.nearest_panel_dist(world, player), brightness)
             audio.set_space(bw.estimate_space(world, player))
+            audio.set_machine_proximity(
+                bw.nearest_machine_dist(world, player))
             best = None
             for (vx, vz, vh, nx_, nz_) in getattr(world, "steam_vents", ()):
                 dxv, dzv = world.wrap_delta(player.x, player.y, vx, vz)

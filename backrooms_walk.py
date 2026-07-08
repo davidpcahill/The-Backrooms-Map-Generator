@@ -856,14 +856,44 @@ class World:
                 return [(a, o, min(h, c - r - 0.02), r, m)
                         for (a, o, h, r, m) in out]
 
+            def machine_face(axis, off, top_n):
+                """A machine housing face: red valve wheel + kit manifold
+                + steam off the top — instead of a standard wall rack."""
+                ent = []
+                h1 = min(0.40, c - 0.16)
+                h2 = min(0.62, c - 0.12)
+                if axis == "x":
+                    ent.append(("w", off, h1, 0.10, 9))
+                    ent.append(("k", 3, 0.5, h2, off, "x", 0.34, 10))
+                else:
+                    ent.append(("k", 2, off, h2, 0.5, "y", 0.36, 7))
+                    ent.append(("v", off, 0.28, 0.03, 7))
+                if (x * 7 + y * 11) % 3 == 0:
+                    self.steam_vents.append(
+                        (x + 0.5, y + off if axis == "x" else y + 0.5,
+                         min(c - 0.18, 0.72), top_n[0], top_n[1]))
+                return ent
+
             if self.solid(x, y - 1):
-                runs += rack("x", y * 31 + 1, y * 31 + (x // 9) * 7, False)
+                if (x, y - 1) in self.machines:
+                    runs += machine_face("x", 0.14, (0.0, 1.0))
+                else:
+                    runs += rack("x", y * 31 + 1, y * 31 + (x // 9) * 7, False)
             if self.solid(x, y + 1):
-                runs += rack("x", y * 31 + 2, y * 31 + (x // 9) * 7 + 3, True)
+                if (x, y + 1) in self.machines:
+                    runs += machine_face("x", 0.86, (0.0, -1.0))
+                else:
+                    runs += rack("x", y * 31 + 2, y * 31 + (x // 9) * 7 + 3, True)
             if self.solid(x - 1, y):
-                runs += rack("y", x * 17 + 1, x * 17 + (y // 9) * 5 + 1, False)
+                if (x - 1, y) in self.machines:
+                    runs += machine_face("y", 0.14, (1.0, 0.0))
+                else:
+                    runs += rack("y", x * 17 + 1, x * 17 + (y // 9) * 5 + 1, False)
             if self.solid(x + 1, y):
-                runs += rack("y", x * 17 + 2, x * 17 + (y // 9) * 5 + 4, True)
+                if (x + 1, y) in self.machines:
+                    runs += machine_face("y", 0.86, (-1.0, 0.0))
+                else:
+                    runs += rack("y", x * 17 + 2, x * 17 + (y // 9) * 5 + 4, True)
             # floor-to-ceiling risers where a rack meets a wall corner
             if self.solid(x, y - 1) and (x * 7 + y * 13) % 17 == 0:
                 runs.append(("v", 0.12, 0.12, 0.05, 7))
@@ -905,13 +935,19 @@ class World:
         doorway with a real door panel. Some are dark inside. The door
         opens (creaks) when someone approaches; it can be slammed open."""
         self.doors = {}
+        self.machines = set()       # solid machine-housing cells (L2)
         self.room_walls = set()     # shielded from the Peripheral Shift —
         # a carved-out ring wall leaves an unframed door hanging in space
         lo, hi = STYLE.get("closed_rooms", (0, 0))
         for _ in range(rng.randint(lo, hi)):
             for _try in range(40):
-                w = rng.randint(5, 9)
-                h = rng.randint(4, 7)
+                # machine levels build bigger plant rooms
+                if STYLE.get("machines"):
+                    w = rng.randint(6, 10)
+                    h = rng.randint(5, 8)
+                else:
+                    w = rng.randint(5, 9)
+                    h = rng.randint(4, 7)
                 x0 = rng.randint(2, self.cols - w - 3)
                 y0 = rng.randint(2, self.rows - h - 3)
                 ok = all(
@@ -934,16 +970,17 @@ class World:
                 # machine rooms (Level 2): hulking solid housings inside,
                 # kept a full cell off the walls so the room stays
                 # walkable ring-around and the door always connects
-                if STYLE.get("machines") and w >= 7 and h >= 6:
+                if STYLE.get("machines") and w >= 6 and h >= 5:
                     for _ in range(rng.randint(1, 2)):
-                        mw = rng.randint(1, 2)
-                        mh = rng.randint(1, 2)
+                        mw = rng.randint(1, min(2, w - 5))
+                        mh = rng.randint(1, min(2, h - 4))
                         mx = rng.randint(x0 + 2, x0 + w - 2 - mw)
                         my = rng.randint(y0 + 2, y0 + h - 2 - mh)
                         for yy in range(my, my + mh):
                             for xx in range(mx, mx + mw):
                                 self.ceil[yy][xx] = 0.0
                                 self.room_walls.add((xx, yy))
+                                self.machines.add((xx, yy))
                 # one door, middle of a random side, lintel above it
                 side = rng.randrange(4)
                 if side == 0:
@@ -2288,6 +2325,12 @@ class Audio:
         if self.hiss_ch:
             self.hiss_ch.set_volume(0.0, 0.0)
         self.hiss_vol = (0.0, 0.0)
+        self.machine = self._sound(self._synth_machine())
+        self.machine_ch = self.machine.play(loops=-1)
+        if self.machine_ch:
+            self.machine_ch.set_volume(0.0, 0.0)
+        self.machine_vol = 0.0
+        self.machine_target = 0.0
         self.hum_ch = self.hum.play(loops=-1)
         self.hum_vol = 0.10
         self.hum_target = 0.10
@@ -2319,6 +2362,24 @@ class Audio:
             off = int(delay * SAMPLE_RATE)
             for i, v in enumerate(mono):
                 out[i + off] += v * gain
+        return out
+
+    def _synth_machine(self):
+        """Heavy plant throb: a 44 Hz fundamental with a slow mechanical
+        chuff, felt more than heard. Seamless 2 s loop (the 2 Hz chuff
+        completes exactly four cycles)."""
+        rng = random.Random(3)
+        out = []
+        n = 0.0
+        dur = SAMPLE_RATE * 2
+        for i in range(dur):
+            t = i / SAMPLE_RATE
+            v = (math.sin(math.tau * 44 * t) * 0.55
+                 + math.sin(math.tau * 88 * t + 0.8) * 0.22
+                 + math.sin(math.tau * 132 * t + 2.1) * 0.10)
+            v *= 0.62 + 0.38 * math.sin(math.tau * 2.0 * t) ** 2
+            n = n * 0.9 + rng.uniform(-1, 1) * 0.1
+            out.append(v * 0.5 + n * 0.22)
         return out
 
     def _synth_hum(self, freq):
@@ -2729,6 +2790,15 @@ class Audio:
         near = max(0.0, 1.0 - panel_dist / 10.0)
         self.hum_target = (0.03 + 0.30 * near) * brightness
 
+    def set_machine_proximity(self, dist):
+        """Running plant: a low throb that swells as you close in — the
+        machine rooms can be FOUND by ear through the dark."""
+        if dist is None:
+            self.machine_target = 0.0
+            return
+        near = max(0.0, 1.0 - dist / 9.0)
+        self.machine_target = 0.34 * near * near
+
     def update(self, dt, p: Player):
         """Breath and heartbeat follow fear and exertion; drips are just
         the garage being the garage."""
@@ -2737,6 +2807,10 @@ class Audio:
         if self.hum_ch:
             self.hum_vol += (self.hum_target - self.hum_vol) * min(1.0, 3.0 * dt)
             self.hum_ch.set_volume(self.hum_vol, self.hum_vol)
+        if self.machine_ch:
+            self.machine_vol += ((self.machine_target - self.machine_vol)
+                                 * min(1.0, 2.5 * dt))
+            self.machine_ch.set_volume(self.machine_vol, self.machine_vol)
         arousal = max(p.fear, p.exertion * 0.85)
 
         self.breath_timer -= dt
@@ -3242,6 +3316,18 @@ def nearest_panel_dist(world: World, p: Player, radius=10) -> float:
     return best
 
 
+def nearest_machine_dist(world: World, p: Player):
+    """Distance to the closest machine housing (for the plant throb),
+    or None when the level has no machines."""
+    best = None
+    for (mx, my) in getattr(world, "machines", ()):
+        dx, dy = world.wrap_delta(p.x, p.y, mx + 0.5, my + 0.5)
+        d = math.hypot(dx, dy)
+        if best is None or d < best:
+            best = d
+    return best
+
+
 def estimate_space(world: World, p: Player) -> float:
     """How big does this room feel? 0 = tight corridor, 1 = cavern.
     Openness around him plus ceiling height."""
@@ -3486,6 +3572,7 @@ def main(argv=None):
             audio.set_hum_proximity(
                 nearest_panel_dist(world, player), brightness)
             audio.set_space(estimate_space(world, player))
+            audio.set_machine_proximity(nearest_machine_dist(world, player))
             best = None
             for (vx, vz, vh, nx_, nz_) in getattr(world, "steam_vents", ()):
                 dxv, dzv = world.wrap_delta(player.x, player.y, vx, vz)
