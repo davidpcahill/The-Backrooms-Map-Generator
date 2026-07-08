@@ -59,6 +59,7 @@ Found-footage Backrooms sim: `backrooms_generator.py` (2D maps),
     heat). Swap make_smiler_layers for a baked sheet when the model
     lands. Sim: L2 TTD 156-420s all caught; L0 unaffected (mean 145s;
     the blind-belief ring-tip fix in Presence keeps tails bounded).
-- Machine-room prop dressing via the OBJ instancing pipeline.
+- Machine-room prop dressing: DONE 2026-07-08 (mat-12 cabinet skins,
+  manifold/wheel dressing, steam tops, 44 Hz proximity throb).
 - Real shadow map for the nearest light.
 - Isolation multiplayer (canon: two wanderers who hear but never meet).
