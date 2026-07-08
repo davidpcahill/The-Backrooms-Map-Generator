@@ -221,15 +221,16 @@ briefly at launch and after any keypress, then fades out.
 
 | Key | Action |
 | --- | --- |
+| `Esc` | Pause menu (level select, mode, audio, fullscreen, quit) |
+| `1`–`5` | Jump straight to Level 0 / 1 / 2 / 37 / ! |
 | `TAB` | Toggle auto-walk / manual |
 | `W A S D` | Move / strafe (manual) |
 | `SHIFT` | Run (manual) |
 | Arrows / `Q` `E` | Turn |
 | `M` | Toggle minimap |
-| `R` | New map (new seed) |
+| `N` / `R` | New tape (same level, fresh maze) |
 | `F` | Toggle fullscreen |
 | `F12` | Screenshot |
-| `Esc` | Quit |
 
 ## Examples
 

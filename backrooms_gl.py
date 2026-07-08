@@ -1211,8 +1211,10 @@ def main(argv=None):
     q_overlay = ctx.vertex_array(overlay_prog, [(unit, "2f", "in_pos")])
     overlay_texs = {}
 
-    def draw_overlay(name, surf, x_px, y_px, alpha):
-        """Blit a pygame surface into the frame at pixel coords (top-left)."""
+    def draw_overlay(name, surf, x_px, y_px, alpha, out_w=None, out_h=None):
+        """Blit a pygame surface into the frame at pixel coords (top-left).
+        out_w/out_h stretch the quad (e.g. a tiny dim surf over the whole
+        frame) without paying for a frame-sized upload."""
         w_px, h_px = surf.get_size()
         data = pygame.image.tobytes(surf, "RGBA")
         tex = overlay_texs.get(name)
@@ -1224,13 +1226,14 @@ def main(argv=None):
             overlay_texs[name] = tex
         tex.write(data)
         tex.use(0)
+        ow, oh = out_w or w_px, out_h or h_px
         overlay_prog["tex"].value = 0
         overlay_prog["alpha"].value = alpha
         overlay_prog["rect"].value = (
             -1.0 + 2.0 * x_px / W,
-            1.0 - 2.0 * (y_px + h_px) / H,
-            2.0 * w_px / W,
-            2.0 * h_px / H)
+            1.0 - 2.0 * (y_px + oh) / H,
+            2.0 * ow / W,
+            2.0 * oh / H)
         q_overlay.render()
 
     scene_tex = ctx.texture((W, H), 4)
@@ -1350,6 +1353,90 @@ def main(argv=None):
         if presence is not None:
             presence = bw.Presence(world, player, rng)
 
+    # ------- pause menu (a VCR menu over a frozen tape) -------
+    MENU_LEVELS = ("0", "1", "2", "37", "run")
+    LEVEL_HOTKEYS = {pygame.K_1: "0", pygame.K_2: "1", pygame.K_3: "2",
+                     pygame.K_4: "37", pygame.K_5: "run"}
+    cur_level = str(args.level)
+    menu_open = False
+    menu_idx = 0
+    menu_level_i = MENU_LEVELS.index(cur_level) \
+        if cur_level in MENU_LEVELS else 0
+    menu_font = pygame.font.SysFont("menlo,consolas,monospace", 17)
+    title_font = pygame.font.SysFont("menlo,consolas,monospace", 26, bold=True)
+    dim_surf = pygame.Surface((4, 4))
+    dim_surf.fill((4, 3, 2))
+    audio_on = not (args.mute or headless)
+
+    def switch_level(lvl):
+        """Change level style: new palette, new textures, new world."""
+        nonlocal cur_level, textures, audio, menu_level_i
+        bw.apply_style(lvl)
+        cur_level = lvl
+        menu_level_i = MENU_LEVELS.index(lvl)
+        textures.release()
+        textures = build_textures(ctx, pygame)
+        pygame.mixer.stop()
+        audio = bw.Audio(pygame, rng, enabled=audio_on)
+        regen()
+
+    def set_audio(on):
+        """Mute = pause running loops + gate new sounds; unmute resumes
+        (or rebuilds the synth engine if it was never enabled)."""
+        nonlocal audio_on, audio
+        audio_on = bool(on) and not headless
+        if audio_on:
+            if not audio.ok:
+                pygame.mixer.stop()
+                audio = bw.Audio(pygame, rng, enabled=True)
+            else:
+                pygame.mixer.unpause()
+        else:
+            pygame.mixer.pause()
+            audio.ok = False
+
+    def menu_items():
+        lvl_name = bw.STYLES[
+            int(MENU_LEVELS[menu_level_i])
+            if MENU_LEVELS[menu_level_i].isdigit()
+            else MENU_LEVELS[menu_level_i]]["name"]
+        return (
+            ("RESUME", ""),
+            ("LEVEL", f"< {lvl_name} >"
+             + ("   [enter: drop in]"
+                if MENU_LEVELS[menu_level_i] != cur_level else "")),
+            ("NEW TAPE", "same level, fresh maze"),
+            ("MODE", "AUTO (found footage)" if auto else "MANUAL (you drive)"),
+            ("AUDIO", "ON" if audio_on else "OFF"),
+            ("FULLSCREEN", "toggle"),
+            ("QUIT", ""),
+        )
+
+    def menu_activate(i, direction=0):
+        nonlocal menu_open, menu_idx, menu_level_i, auto, running
+        if i == 0 and not direction:
+            menu_open = False
+        elif i == 1:
+            if direction:
+                menu_level_i = (menu_level_i + direction) % len(MENU_LEVELS)
+            elif MENU_LEVELS[menu_level_i] != cur_level:
+                switch_level(MENU_LEVELS[menu_level_i])
+                menu_open = False
+        elif i == 2 and not direction:
+            regen()
+            menu_open = False
+        elif i == 3:
+            auto = not auto
+        elif i == 4:
+            set_audio(not audio_on)
+        elif i == 5 and not direction:
+            try:
+                pygame.display.toggle_fullscreen()
+            except Exception:
+                pass
+        elif i == 6 and not direction:
+            running = False
+
     running = True
     while running:
         dt = 1 / 30.0 if headless else min(clock.tick(60) / 1000.0, 0.05)
@@ -1358,22 +1445,59 @@ def main(argv=None):
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
-            elif event.type == pygame.KEYDOWN:
-                hud_timer = 3.0
+            elif event.type == pygame.KEYDOWN and menu_open:
+                items = menu_items()
                 if event.key == pygame.K_ESCAPE:
-                    running = False
-                elif event.key == pygame.K_TAB:
-                    auto = not auto
-                elif event.key == pygame.K_m:
-                    show_map = not show_map
+                    menu_open = False
+                elif event.key in (pygame.K_UP, pygame.K_w):
+                    menu_idx = (menu_idx - 1) % len(items)
+                elif event.key in (pygame.K_DOWN, pygame.K_s):
+                    menu_idx = (menu_idx + 1) % len(items)
+                elif event.key in (pygame.K_LEFT, pygame.K_a):
+                    menu_activate(menu_idx, -1)
+                elif event.key in (pygame.K_RIGHT, pygame.K_d):
+                    menu_activate(menu_idx, 1)
+                elif event.key in (pygame.K_RETURN, pygame.K_SPACE,
+                                   pygame.K_KP_ENTER):
+                    menu_activate(menu_idx)
+                elif event.key in LEVEL_HOTKEYS:
+                    switch_level(LEVEL_HOTKEYS[event.key])
+                    menu_open = False
                 elif event.key == pygame.K_F12:
                     data = (window_fbo or out_fbo).read(components=3)
                     from PIL import Image
                     Image.frombytes("RGB", (W, H), data).transpose(
                         Image.FLIP_TOP_BOTTOM).save(f"backrooms_gl_{seed}.png")
                     print(f"saved backrooms_gl_{seed}.png")
-                elif event.key == pygame.K_r:
+            elif event.type == pygame.KEYDOWN:
+                hud_timer = 3.0
+                if event.key == pygame.K_ESCAPE:
+                    menu_open = True
+                    menu_idx = 0
+                    menu_level_i = MENU_LEVELS.index(cur_level)
+                elif event.key == pygame.K_TAB:
+                    auto = not auto
+                elif event.key == pygame.K_m:
+                    show_map = not show_map
+                elif event.key == pygame.K_f:
+                    try:
+                        pygame.display.toggle_fullscreen()
+                    except Exception:
+                        pass
+                elif event.key in LEVEL_HOTKEYS \
+                        and LEVEL_HOTKEYS[event.key] != cur_level:
+                    switch_level(LEVEL_HOTKEYS[event.key])
+                elif event.key == pygame.K_F12:
+                    data = (window_fbo or out_fbo).read(components=3)
+                    from PIL import Image
+                    Image.frombytes("RGB", (W, H), data).transpose(
+                        Image.FLIP_TOP_BOTTOM).save(f"backrooms_gl_{seed}.png")
+                    print(f"saved backrooms_gl_{seed}.png")
+                elif event.key in (pygame.K_r, pygame.K_n):
                     regen()
+
+        if menu_open:
+            dt = 0.0        # the tape is paused; the world holds its breath
 
         if args.test_death and death_t is None and t_now > 1.5:
             death_t = 0.0
@@ -1740,14 +1864,35 @@ def main(argv=None):
                              int(presence.y % world.rows * 2)), 3)
                 if mm_surf is not None:
                     draw_overlay("map", mm_surf, 16, 16, 0.85)
-            if hud_timer > 0:
-                hud_timer -= dt
+            if hud_timer > 0 and not menu_open:
+                hud_timer -= dt if dt else 1 / 60
                 hud = (f"{bw.STYLE['name']}  seed {seed}  "
                        f"{'AUTO' if auto else 'MANUAL'}  "
-                       "TAB=drive M=map R=new F12=shot ESC=quit")
+                       "1-5=level TAB=drive M=map N=new F=full ESC=menu")
                 text = hud_font.render(hud, True, (235, 225, 170))
                 draw_overlay("hud", text, 16, H - 34,
                              min(1.0, hud_timer / 0.5))
+            if menu_open:
+                draw_overlay("dim", dim_surf, 0, 0, 0.62, out_w=W, out_h=H)
+                items = menu_items()
+                rows = [title_font.render("B A C K R O O M S", True,
+                                          (222, 206, 130)), None]
+                for i, (label, value) in enumerate(items):
+                    sel = i == menu_idx
+                    col = (238, 226, 168) if sel else (128, 118, 92)
+                    txt = f"{'>' if sel else ' '} {label:<12}{value}"
+                    rows.append(menu_font.render(txt, True, col))
+                rows.append(None)
+                rows.append(hud_font.render(
+                    "arrows: move/adjust   enter: select   esc: resume",
+                    True, (110, 102, 82)))
+                wmax = max(r.get_width() for r in rows if r)
+                lh = menu_font.get_height() + 8
+                y0 = H // 2 - (len(rows) * lh) // 2
+                for i, r in enumerate(rows):
+                    if r is not None:
+                        draw_overlay(f"menu{i}", r,
+                                     (W - wmax) // 2, y0 + i * lh, 1.0)
             ctx.disable(moderngl.BLEND)
 
         if args.autoshot and not headless:
