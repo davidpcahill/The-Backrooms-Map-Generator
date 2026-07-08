@@ -51,10 +51,14 @@ Found-footage Backrooms sim: `backrooms_generator.py` (2D maps),
       https://skfb.ly/oAyYE (grab original .blend if offered)
     - alt: "Backrooms Smiler Rig" by Flying_dragons800, 185.7k tris,
       rough rig — sketchfab.com/3d-models/backrooms-smiler-rig-fed28f4534f94fcebd97db8e5b6e3ed4
-    Design: INVERSE of the Howler — bake emissive grin/eyes; visible
-    only in darkness (glow scales with 1-light), vanishes when lit or
-    zoomed at. Level 2 blackouts are the hunting ground. Presence gets
-    a per-style render/behavior variant rather than a new class.
+    Design: INVERSE of the Howler — visible only in darkness, vanishes
+    when lit. IMPLEMENTED 2026-07-08 with PROCEDURAL placeholder art
+    (make_smiler_layers in backrooms_gl.py; STYLE monster="smiler";
+    sprite mode 3 = self-lit dark-gated; Presence: inverted vis_range,
+    _slip_to_dark on lit_t>1.1, 0.4x step loudness, 1.4x director
+    heat). Swap make_smiler_layers for a baked sheet when the model
+    lands. Sim: L2 TTD 156-420s all caught; L0 unaffected (mean 145s;
+    the blind-belief ring-tip fix in Presence keeps tails bounded).
 - Machine-room prop dressing via the OBJ instancing pipeline.
 - Real shadow map for the nearest light.
 - Isolation multiplayer (canon: two wanderers who hear but never meet).

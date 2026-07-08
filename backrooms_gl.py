@@ -148,6 +148,12 @@ void main() {
     if (t.a < 0.03) discard;
     float fd = length(wpos - cam);
     float fog = 1.0 - exp(-fd * fogden);
+    if (mode == 3) {     // smiler: self-lit, and it exists ONLY in the dark
+        float a = t.a * shadow_k;          // shadow_k carries darkness here
+        fragment = vec4(mix(t.rgb, fogcol, clamp(fog, 0.0, 1.0) * 0.55),
+                        a * (1.0 - fog * 0.6));
+        return;
+    }
     if (mode == 2) {     // its shadow, thrown across the floor by a light
         fragment = vec4(0.0, 0.0, 0.0, t.a * shadow_k * (1.0 - clamp(fog, 0.0, 1.0)));
         return;
@@ -1096,6 +1102,57 @@ def gather_lights(world, p, flick):
     return n, lpos, lcol
 
 
+def make_smiler_layers(ctx, pygame_module):
+    """Placeholder Smiler: a procedural glowing grin + eyes, 4 subtle
+    pulse frames. Swapped for the baked rigged model when it lands
+    (see CLAUDE.md roadmap). Returns (tex, aspect) like the Howler."""
+    S = 192
+    frames = []
+    for f in range(4):
+        surf = pygame_module.Surface((S, S), pygame_module.SRCALPHA)
+        pulse = 1.0 + 0.045 * math.sin(f / 4 * math.tau)
+        cx = S // 2
+
+        def glow(pos, rx, ry, steps=7):
+            for i in range(steps, 0, -1):
+                k = i / steps
+                a = int(14 + 50 * (1 - k) ** 2)
+                col = (200, 228, 255, a)
+                r = pygame_module.Rect(0, 0, int(rx * 2 * (0.55 + k)),
+                                       int(ry * 2 * (0.55 + k)))
+                r.center = pos
+                pygame_module.draw.ellipse(surf, col, r)
+
+        # eyes: tall hollow ovals, hard white core inside a cold halo
+        for ex in (-34, 34):
+            pos = (cx + int(ex * pulse), 62)
+            glow(pos, 9, 16)
+            pygame_module.draw.ellipse(
+                surf, (245, 250, 255, 235),
+                pygame_module.Rect(pos[0] - 6, pos[1] - 13, 12, 26))
+        # the grin: a wide crescent of interlocking teeth
+        pts_top, pts_bot = [], []
+        for i in range(25):
+            t_ = i / 24
+            x = cx + (t_ - 0.5) * 128 * pulse
+            arc = math.sin(t_ * math.pi)
+            ymid = 118 + arc * 26
+            jag = 5 if i % 2 == 0 else -4
+            pts_top.append((x, ymid - 7 * arc - max(0, jag)))
+            pts_bot.append((x, ymid + 7 * arc - min(0, jag)))
+        glow((cx, 132), 66 * pulse, 26, steps=8)
+        pygame_module.draw.polygon(
+            surf, (248, 252, 255, 245), pts_top + pts_bot[::-1])
+        frames.append(surf)
+    data = b"".join(
+        pygame_module.image.tobytes(
+            pygame_module.transform.flip(s, False, True), "RGBA")
+        for s in frames)
+    tex = ctx.texture_array((S, S, 4), 4, data)
+    tex.filter = (0x2601, 0x2601)
+    return tex, 1.0
+
+
 def load_sprite_layers(ctx, pygame_module):
     """Howler sheet -> texture array, frames padded bottom-center so the
     ground contact is consistent. Returns (tex, layer_count) or None."""
@@ -1264,7 +1321,12 @@ def main(argv=None):
     mesh = WorldMesh(ctx, scene_prog, world)
     lg_tex = ctx.texture((world.cols, world.rows), 1, dtype="f4")
     lg_tex.filter = (0x2601, 0x2601)
-    sprite = load_sprite_layers(ctx, pygame)
+    def build_sprite():
+        if bw.STYLE.get("monster") == "smiler":
+            return make_smiler_layers(ctx, pygame)
+        return load_sprite_layers(ctx, pygame)
+
+    sprite = build_sprite()
     sprite_vbo = ctx.buffer(reserve=6 * 5 * 4)
     sprite_vao = ctx.vertex_array(
         sprite_prog, [(sprite_vbo, "3f 2f", "in_pos", "in_uv")])
@@ -1369,13 +1431,17 @@ def main(argv=None):
     audio_on = not (args.mute or headless)
 
     def switch_level(lvl):
-        """Change level style: new palette, new textures, new world."""
-        nonlocal cur_level, textures, audio, menu_level_i
+        """Change level style: new palette, new textures, new monster,
+        new world."""
+        nonlocal cur_level, textures, audio, menu_level_i, sprite
         bw.apply_style(lvl)
         cur_level = lvl
         menu_level_i = MENU_LEVELS.index(lvl)
         textures.release()
         textures = build_textures(ctx, pygame)
+        if sprite is not None:
+            sprite[0].release()
+        sprite = build_sprite()
         pygame.mixer.stop()
         audio = bw.Audio(pygame, rng, enabled=audio_on)
         regen()
@@ -1683,21 +1749,29 @@ def main(argv=None):
             doors_vbo.write(dverts.tobytes())
             doors_vao.render(vertices=len(dverts) // 10)
 
-        # the Howler billboard + blob shadow
+        # the creature billboard + blob shadow
         if presence is not None and sprite is not None:
+            smiler_m = bw.STYLE.get("monster") == "smiler"
             stex, aspect = sprite
             rx, ry = world.wrap_delta(player.x, player.y, presence.x, presence.y)
             pz = world.floor_at(presence.x, presence.y)
-            hgt = 1.15
-            wdt = hgt * aspect
+            if smiler_m:
+                # no feet: the grin hangs in the air, drifting slightly
+                hgt = wdt = 0.62
+                pz += 0.14 + 0.035 * math.sin(t_now * 1.6)
+                layer = int(t_now * 5) % 4
+            else:
+                hgt = 1.15
+                wdt = hgt * aspect
+                to_player0 = math.atan2(-ry, -rx)
+                viewa = (to_player0
+                         - getattr(presence, "heading", 0.0)) % math.tau
+                row_ = int((viewa + math.pi / 8) / (math.pi / 4)) % 8
+                col_ = int(getattr(presence, "anim_phase", 0.0) * 8) % 8
+                layer = row_ * 8 + col_
             fwdx, fwdz = math.cos(yaw), math.sin(yaw)
             rightx, rightz = -fwdz, fwdx
             cxp, czp = player.x + rx, player.y + ry
-            to_player = math.atan2(-ry, -rx)
-            viewa = (to_player - getattr(presence, "heading", 0.0)) % math.tau
-            row_ = int((viewa + math.pi / 8) / (math.pi / 4)) % 8
-            col_ = int(getattr(presence, "anim_phase", 0.0) * 8) % 8
-            layer = row_ * 8 + col_
             xi, yi = int(presence.x) % world.cols, int(presence.y) % world.rows
             cell_l = world.light[yi][xi]
             ctx.enable(moderngl.BLEND)      # BLEND
@@ -1723,7 +1797,7 @@ def main(argv=None):
                 cxp - s, pz + 0.012, czp + s, 0, 1,
                 cxp + s, pz + 0.012, czp - s, 1, 0,
                 cxp + s, pz + 0.012, czp + s, 1, 1], dtype=np.float32)
-            if blob_ok:
+            if blob_ok and not smiler_m:
                 sprite_prog["mode"].value = 1
                 sprite_prog["shadow_k"].value = 0.0
                 sprite_prog["layer"].value = 0.0
@@ -1741,7 +1815,8 @@ def main(argv=None):
             # plane. Through a doorway, the shadow arrives first.
             best = None
             sxi, syi = int(presence.x), int(presence.y)
-            for yy in range(syi - 9, syi + 10):
+            # no body, no shadow: the light-scan is skipped for a smiler
+            for yy in () if smiler_m else range(syi - 9, syi + 10):
                 for xx in range(sxi - 9, sxi + 10):
                     x_, y_ = xx % world.cols, yy % world.rows
                     if world.panel[y_][x_] and world.light[y_][x_] > 0.35:
@@ -1788,8 +1863,15 @@ def main(argv=None):
             bb = np.array([
                 *bl, 0, 0, *br, 1, 0, *tl, 0, 1,
                 *tl, 0, 1, *br, 1, 0, *tr, 1, 1], dtype=np.float32)
-            sprite_prog["mode"].value = 0
-            sprite_prog["shadow_k"].value = 0.0
+            if smiler_m:
+                # self-lit and dark-gated: full presence in blackness,
+                # nothing at all under a live light
+                sprite_prog["mode"].value = 3
+                sprite_prog["shadow_k"].value = max(
+                    0.0, min(1.0, 1.0 - cell_l * 1.8))
+            else:
+                sprite_prog["mode"].value = 0
+                sprite_prog["shadow_k"].value = 0.0
             sprite_prog["layer"].value = float(layer)
             sprite_vbo.write(bb.tobytes())
             sprite_vao.render()

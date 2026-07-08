@@ -166,6 +166,7 @@ STYLES = {
         shift=False,
         pipes=True,
         machines=True,
+        monster="smiler",
         monster_tint=(255, 130, 100),
     ),
     # Level 37 "Poolrooms": white tile, bright diffuse light, empty
@@ -1776,6 +1777,7 @@ class Presence:
         self.replan = 0.0
         self.stride = 0.0
         self.growl_ping = 0.0
+        self.lit_t = 0.0         # smiler: how long light has been on it
         self.lost = 0.0
         self.state = "stalk"     # stalk | lurk | hunt
         self.lurk_t = 0.0        # how long it's been stared at
@@ -1842,6 +1844,21 @@ class Presence:
                 return x + 0.5, y + 0.5
         x, y = self.rng.choice(cells)
         return x + 0.5, y + 0.5
+
+    def _slip_to_dark(self, world, p):
+        """Smiler: light found it. It was never there. It reappears in
+        darkness a corridor or two away — the director's clock keeps
+        running, unlike a full relocate."""
+        for _ in range(80):
+            x = self.rng.randrange(world.cols)
+            y = self.rng.randrange(world.rows)
+            if (x, y) not in world.open_set or world.light[y][x] > 0.25:
+                continue
+            dx, dy = world.wrap_delta(p.x, p.y, x + 0.5, y + 0.5)
+            if 7.0 < math.hypot(dx, dy) < 16.0:
+                self.x, self.y = x + 0.5, y + 0.5
+                self.path = []
+                return
 
     def relocate(self, world, p):
         self.x, self.y = self._pick_spot(world, p, ahead=False)
@@ -1938,8 +1955,13 @@ class Presence:
         """Perceive, decide, move. Returns True the moment it reaches him."""
         self.scream_cd = max(0.0, self.scream_cd - dt)
         self.alive_t += dt
-        # 0 for the first ~55s, full hunger by ~5 minutes (mood-scaled)
-        agg = max(0.0, min(1.0, (self.alive_t * self.mood - 55.0) / 230.0))
+        smiler = STYLE.get("monster") == "smiler"
+        # 0 for the first ~55s, full hunger by ~5 minutes (mood-scaled).
+        # A smiler runs hot: it loses so much time slipping away from
+        # light that a cool clock never gets a kill in.
+        heat = 1.4 if smiler else 1.0
+        agg = max(0.0, min(1.0,
+                           (self.alive_t * self.mood * heat - 55.0) / 230.0))
         if self.mode == "chase":
             agg = max(agg, 0.8)      # Level ! has no warm-up
         elif self.mode == "rare":
@@ -1955,7 +1977,12 @@ class Presence:
         rel = (bearing - p.angle + math.pi) % math.tau - math.pi
         sxi, syi = int(self.x) % world.cols, int(self.y) % world.rows
         light_there = world.light[syi][sxi]
-        vis_range = 4.0 + 16.0 * max(0.1, light_there)
+        if smiler:
+            # INVERTED sight: a smiler is a self-lit grin — invisible
+            # under a live light, carrying far through pitch blackness.
+            vis_range = 3.0 + 18.0 * (1.0 - light_there)
+        else:
+            vis_range = 4.0 + 16.0 * max(0.1, light_there)
         # Zooming the camera at it genuinely extends his sight (GL mode).
         if abs(rel) < 0.35:
             vis_range *= getattr(p, "zoom_boost", 1.0)
@@ -2013,7 +2040,24 @@ class Presence:
         else:
             self.contact_t += dt
             b_dx, b_dy = world.wrap_delta(self.x, self.y, *self.belief)
-            if math.hypot(b_dx, b_dy) < 1.5 and self.contact_t > 1.0:
+            # Blind too long and the trail is ice cold — on a big map a
+            # 14-cell prowl bubble can miss him for a whole life (the
+            # quiet Smiler exposed this). The level tips it off: belief
+            # lands on a ring AROUND him, never his exact spot. A hungry
+            # director tips sooner and more often.
+            tip_after = 26.0 - 14.0 * agg
+            if self.contact_t > max(6.0, tip_after):
+                for _ in range(24):
+                    ang = self.rng.uniform(0, math.tau)
+                    r = self.rng.uniform(6.0, 13.0)
+                    cx = int(p.x + math.cos(ang) * r) % world.cols
+                    cy = int(p.y + math.sin(ang) * r) % world.rows
+                    if not world.solid(cx, cy):
+                        self.belief = (cx + 0.5, cy + 0.5)
+                        self.contact_t = max(6.0, tip_after) * 0.55
+                        self.replan = 0.0
+                        break
+            elif math.hypot(b_dx, b_dy) < 1.5 and self.contact_t > 1.0:
                 # arrived where he was; he isn't. Prowl outward from the
                 # cold trail — the search widens the longer it's blind.
                 r = min(4.0 + self.contact_t * 0.6, 14.0)
@@ -2040,6 +2084,18 @@ class Presence:
         shy = self.tension < 0.5
         if shy and dist < 5.0:
             self.tension = min(cap, self.tension + dt / 12.0)
+
+        # --- Smiler light-aversion: a live light on it for more than a
+        # beat and it simply is not there anymore. Only mid-hunt does it
+        # tolerate being seen under light.
+        if smiler:
+            if light_there > 0.5:
+                self.lit_t += dt
+            else:
+                self.lit_t = 0.0
+            if self.lit_t > 1.1 and self.state != "hunt":
+                self._slip_to_dark(world, p)
+                self.lit_t = 0.0
 
         # --- State machine: STALK (rubber-band pace, but a shy stalker
         # holds a respectful, horrible distance), LURK (stared at from
@@ -2134,9 +2190,11 @@ class Presence:
                 if audio:
                     audio.presence_step(bearing, dist, p)
                 # every real footfall is a hearable event — hunting
-                # strides come down harder
-                p.hear_sound(world, self.x, self.y,
-                             1.6 if self.state == "hunt" else 1.05)
+                # strides come down harder; a smiler mostly DRIFTS
+                loud = 1.6 if self.state == "hunt" else 1.05
+                if smiler:
+                    loud *= 0.4
+                p.hear_sound(world, self.x, self.y, loud)
 
         # the hunt's darkness wave: lights die in sequence along its path
         if self.wave:
